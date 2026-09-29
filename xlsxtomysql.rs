@@ -826,11 +826,18 @@ _XLSX_CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 _XLSX_ROOT_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"""
 
-_XLSX_WB_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"""
+_XLSX_ROOT_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"""
 
-_XLSX_WORKBOOK = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="%s" sheetId="1" r:id="rId1"/></sheets></workbook>"""
+# 多工作表时按 sheet 数量动态生成（%s 处填入各 sheet 的 Override / 关系 / 声明）
+_XLSX_CT_TMPL = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>%s</Types>"""
+
+_XLSX_RELS_TMPL = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">%s</Relationships>"""
+
+_XLSX_WB_TMPL = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>%s</sheets></workbook>"""
 
 # XML 1.0 不允许这些控制字符，Excel 也会拒绝加载
 _XML_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -877,52 +884,76 @@ def _cell_xml(ref, v):
         ref, _xml_text(v))
 
 
-def write_xlsx(path, rows, sheet="Sheet1", dims=None):
-    """把 rows（可迭代，每项是一行的 list/tuple）写成一个极简 xlsx。
+def write_xlsx(path, sheets):
+    """把 sheets 写成一个极简 xlsx。
 
-    逐行流式写入，内存占用与行数无关；不建临时文件、不删除任何文件。
-    dims=(总行数, 总列数) 可选，给了就写出 <dimension>，方便其它工具直接取范围
-    （只读模式下 openpyxl 拿得到 max_row/max_column，不用扫全表）。
+    sheets: [(工作表名, rows, dims)]；rows 可迭代（每项一行的 list/tuple），
+    dims=(总行数, 总列数) 可为 None。逐行流式写入，内存占用与行数无关；
+    不建临时文件、不删除任何文件。dims 给了就写出 <dimension>，方便其它工具
+    直接取范围（只读模式下 openpyxl 拿得到 max_row/max_column，不用扫全表）。
+    工作表名的合法性与去重由宿主负责，这里只截断到 31 字符。
     """
-    name = _xml_attr((sheet or "Sheet1")[:_SHEET_MAX]) or "Sheet1"
-    dim = ""
-    if dims and dims[0] > 0 and dims[1] > 0:
-        dim = '<dimension ref="A1:%s%d"/>' % (col_name(dims[1]), dims[0])
+    n = len(sheets)
+    overrides = "".join(
+        '<Override PartName="/xl/worksheets/sheet%d.xml" ContentType='
+        '"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' % i
+        for i in range(1, n + 1))
+    rels = "".join(
+        '<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet%d.xml"/>' % (i, i)
+        for i in range(1, n + 1))
+    decls = "".join(
+        '<sheet name="%s" sheetId="%d" r:id="rId%d"/>'
+        % (_xml_attr((nm or ("Sheet%d" % i))[:_SHEET_MAX]) or ("Sheet%d" % i), i, i)
+        for i, (nm, _rows, _dims) in enumerate(sheets, 1))
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", _XLSX_CONTENT_TYPES)
+        z.writestr("[Content_Types].xml", _XLSX_CT_TMPL % overrides)
         z.writestr("_rels/.rels", _XLSX_ROOT_RELS)
-        z.writestr("xl/workbook.xml", _XLSX_WORKBOOK % name)
-        z.writestr("xl/_rels/workbook.xml.rels", _XLSX_WB_RELS)
-        with z.open("xl/worksheets/sheet1.xml", "w") as f:
-            f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                    b'<worksheet xmlns="http://schemas.openxmlformats.org/'
-                    b'spreadsheetml/2006/main">')
-            if dim:
-                f.write(dim.encode("utf-8"))
-            f.write(b"<sheetData>")
-            for ri, row in enumerate(rows, 1):
-                f.write(('<row r="%d">' % ri).encode("utf-8"))
-                for ci, v in enumerate(row, 1):
-                    xml = _cell_xml("%s%d" % (col_name(ci), ri), v)
-                    if xml:
-                        f.write(xml.encode("utf-8"))
-                f.write(b"</row>")
-            f.write(b"</sheetData></worksheet>")
+        z.writestr("xl/workbook.xml", _XLSX_WB_TMPL % decls)
+        z.writestr("xl/_rels/workbook.xml.rels", _XLSX_RELS_TMPL % rels)
+        for i, (_nm, rows, dims) in enumerate(sheets, 1):
+            dim = ""
+            if dims and dims[0] > 0 and dims[1] > 0:
+                dim = '<dimension ref="A1:%s%d"/>' % (col_name(dims[1]), dims[0])
+            with z.open("xl/worksheets/sheet%d.xml" % i, "w") as f:
+                f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        b'<worksheet xmlns="http://schemas.openxmlformats.org/'
+                        b'spreadsheetml/2006/main">')
+                if dim:
+                    f.write(dim.encode("utf-8"))
+                f.write(b"<sheetData>")
+                for ri, row in enumerate(rows, 1):
+                    f.write(('<row r="%d">' % ri).encode("utf-8"))
+                    for ci, v in enumerate(row, 1):
+                        xml = _cell_xml("%s%d" % (col_name(ci), ri), v)
+                        if xml:
+                            f.write(xml.encode("utf-8"))
+                    f.write(b"</row>")
+                f.write(b"</sheetData></worksheet>")
 
 
 # --------------------------------------------------------------------------
-# mode = errrows   从 stdin 读失败行，写出 xlsx
+# mode = errrows   从 stdin 读失败行，写出 xlsx（支持多工作表）
 # --------------------------------------------------------------------------
 def cmd_errrows(out_path):
-    header = []
-    rows = []
+    # 行协议：S<TAB>工作表名 开始一个新工作表（缺省名为 errrows）；
+    #         H<TAB>... 表头；R<TAB>... 失败行（第一列「原行号」写成数值）
+    groups = []          # [name, header, rows]
+    cur = None
     for ln in sys.stdin.read().split("\n"):
         if not ln:
             continue
         parts = ln.split(TAB)
         tag = parts[0]
+        if tag == "S":
+            cur = [unesc(parts[1]) if len(parts) > 1 else "errrows", [], []]
+            groups.append(cur)
+            continue
+        if cur is None:
+            cur = ["errrows", [], []]
+            groups.append(cur)
         if tag == "H":
-            header = [unesc(x) for x in parts[1:]]
+            cur[1] = [unesc(x) for x in parts[1:]]
         elif tag == "R":
             vals = [unesc(x) for x in parts[1:]]
             # 第一列「原行号」写成数值，方便在 Excel 里排序/筛选
@@ -931,15 +962,15 @@ def cmd_errrows(out_path):
                     vals[0] = int(str(vals[0]).strip())
                 except (TypeError, ValueError):
                     pass
-            rows.append(vals)
+            cur[2].append(vals)
 
-    def gen():
-        yield header
-        for r in rows:
-            yield r
-
-    n_cols = max([len(header)] + [len(r) for r in rows]) if header or rows else 0
-    write_xlsx(out_path, gen(), "errrows", dims=(1 + len(rows), n_cols))
+    sheets = []
+    for name, header, rows in groups:
+        if not header and not rows:
+            continue
+        n_cols = max([len(header)] + [len(r) for r in rows]) if header or rows else 0
+        sheets.append((name, [header] + rows, (1 + len(rows), n_cols)))
+    write_xlsx(out_path, sheets)
     w("#OK\t%s" % os.path.abspath(out_path))
     return 0
 
@@ -994,7 +1025,7 @@ if __name__ == "__main__":
 // ===========================================================================
 // 常量
 // ===========================================================================
-const VERSION: &str = "2.2.0";
+const VERSION: &str = "2.3.0";
 
 const EXIT_OK: i32 = 0;
 const EXIT_ERROR: i32 = 1;
@@ -1311,6 +1342,7 @@ const CATALOG: &[(&str, &str)] = &[
     ("从「第一个数据所在行」开始没有任何数据，请检查行号参数", "no data from FIRST_DATA_ROW onwards; check the row number"),
     ("以数字开头", "starts with a digit"),
     ("位置", "Where"),
+    ("位置参数过多：新表名之后最多跟 3 个行号（字段行 数据行 共几行）", "too many positional arguments: at most 3 row numbers after the table name (header_row data_row rows)"),
     ("值", "Value"),
     ("全部为整数", "all integers"),
     ("全部为日期", "dates only"),
@@ -1324,8 +1356,11 @@ const CATALOG: &[(&str, &str)] = &[
     ("原字段名全为非法字符", "original name is entirely illegal characters"),
     ("原行号", "Row"),
     ("只有真假值", "boolean values only"),
+    ("同时转换多个工作表时不能指定新表名（各 sheet 用自己的名字）", "cannot specify a table name when converting multiple worksheets (each sheet uses its own name)"),
+    ("同时转换多个工作表时会按 sheet 名各生成一个 sql，不能使用 --out 指定单一输出文件", "converting multiple worksheets writes one .sql per sheet; --out (a single file) cannot be used"),
     ("含空白", "contains whitespace"),
     ("含非法字符", "contains illegal characters"),
+    ("失败", "failed"),
     ("失败原因", "Reason"),
     ("失败原因归类", "Failure reasons"),
     ("失败行数", "Failed"),
@@ -1337,15 +1372,19 @@ const CATALOG: &[(&str, &str)] = &[
     ("工作表  :", "sheet  :"),
     ("已丢弃时间部分", "the time part was dropped"),
     ("已读过表头", "header already read"),
+    ("当前目录没有找到 .xls / .xlsx 文件", "no .xls / .xlsx files found in the current directory"),
+    ("成功", "ok"),
     ("成功行数", "Succeeded"),
     ("扫描中", "scanning"),
     ("扫描方式:", "scan mode:"),
+    ("批量模式（未指定文件）会为每个 sheet 各生成一个 sql，不能使用 --out 指定单一输出文件", "batch mode (no file given) writes one .sql per sheet; --out (a single file) cannot be used"),
     ("按 Excel 日期序列号转换", "converted from the Excel date serial number"),
     ("推断依据", "Basis"),
     ("提醒", "Notice"),
     ("数据区中间出现整行为空的行，会打断数据；请删除该行或加 --force 忽略", "a completely blank row appears in the middle of the data and breaks the sequence; delete it, or add --force to ignore it"),
     ("数据区为空", "empty data area"),
     ("数据超出字段名范围", "data beyond the header range"),
+    ("文件", "file"),
     ("文件格式", "Format"),
     ("文件格式:", "format:"),
     ("新字段名", "New column"),
@@ -1364,6 +1403,7 @@ const CATALOG: &[(&str, &str)] = &[
     ("类型扫描方式", "Scan mode"),
     ("结果表 1 · 转换结果", "Report 1 · Conversion result"),
     ("结果表 2 · 新字段名称及类型", "Report 2 · New column names and types"),
+    ("结果表 3 · 批量汇总", "Result table 3 - batch summary"),
     ("耗时", "Elapsed"),
     ("行", "rows"),
     ("行数", "Rows"),
@@ -1374,13 +1414,16 @@ const CATALOG: &[(&str, &str)] = &[
     ("超长截断", "truncated (too long)"),
     ("跳过空行", "Blank rows skipped"),
     ("转换中", "converting"),
+    ("输出 sql", "output .sql"),
     ("输出文件", "Output file"),
     ("重复的字段名行", "duplicate header row"),
     ("错误:", "error:"),
     ("问题", "Problem"),
     ("项", "items"),
     ("项目", "Item"),
+    ("（仅扫描）", "(scan only)"),
     ("（已留少量余量）", " (some headroom kept)"),
+    ("（已跳过）", "(skipped)"),
     ("（该列在样本中全为空）", "(column empty in the sample)"),
     // ---- 模板匹配（整串锚定；长字面量优先，避免短模板抢先命中）----
     ("  ⚠ 以下字段的原值带时区偏移（如 2024-01-01T08:30:00+08:00），MySQL 的 datetime 不存时区，偏移量已被丢弃、只保留字面时间；如需按时区换算请先在 Excel 里统一：{}", "  ! these columns had timezone offsets (e.g. 2024-01-01T08:30:00+08:00); MySQL datetime has no timezone, so the offset was dropped and only the literal time kept - normalise in Excel first if you need the offset applied: {}"),
@@ -1389,6 +1432,8 @@ const CATALOG: &[(&str, &str)] = &[
     ("  ⚠ 以下字段有 15 位以上的数字，Excel 只能精确保存 15 位，末位可能已被改写为 0，请核对原始数据：{}", "  ! these columns contain numbers with more than 15 digits; Excel keeps only 15 significant digits and the tail may already have become zeros - verify against the source: {}"),
     ("输出目录不存在: {}（请先创建该目录，或用 --out / --err-file / --report 指定别处）", "output directory does not exist: {} (create it first, or point --out / --err-file / --report elsewhere)"),
     ("无法启动 Python 解释器 {}\n  {}\n  可用 --python 指定一个装了 openpyxl 的解释器", "cannot start the Python interpreter {}\n  {}\n  use --python to point at an interpreter with openpyxl installed"),
+    ("工作表 '{}' 不存在。可用工作表: {}\n也可以用编号（1~{}）或区间形式（如 [1-3]、[1,3,5]）", "worksheet '{}' does not exist. Available worksheets: {}\nYou can also use an index (1~{}) or a range expression (e.g. [1-3], [1,3,5])"),
+    ("位置参数过多（{} 个）：最多为 文件名 sheet 新表名 字段行 数据行 共几行；详见 --help", "too many positional arguments ({}): at most FILE SHEET TABLE HEADER_ROW DATA_ROW [ROWS]; see --help"),
     ("内容长度 {} 超过 {}({}) 限制（样本未覆盖到，可加 --full-scan 重新扫描或先处理数据）", "length {} exceeds the {}({}) limit (not covered by the sample; try --full-scan or clean the data first)"),
     ("缺少 Python 依赖: {}。请先执行 pip install openpyxl xlrd", "missing Python dependency: {}. Please run: pip install openpyxl xlrd"),
     ("  ⚠ 检测到 {} 个隐藏列（{}{}），隐藏只是不显示，内容仍会被导出；如需排除请先删除该列", "  ! {} hidden column(s) ({}{}); hidden only means not displayed, the content is still exported - delete the column if you want it excluded"),
@@ -1399,7 +1444,10 @@ const CATALOG: &[(&str, &str)] = &[
     ("数值 {} 小数位超过 decimal({},{}) 允许的 {} 位（可加大扫描样本后重试）", "number {} has more fraction digits than decimal({},{}) permits: {} (raise the sample size and retry)"),
     ("抽样扫描: 共 {} 行，按 {}% 跳跃抽样，每 {} 行取 1 行，实际判定约 {} 行", "sampled scan: {} rows in total, {}% sampling, 1 row in every {}, about {} rows inspected"),
     ("  ⚠ 以下字段有超出 MySQL 日期/时间范围的值，已整列按文本保存：{}", "  ! these columns contain values outside the MySQL date/time range and were stored as text: {}"),
+    ("⚠ 有失败行的 sheet 已汇总到 errrows.xlsx（共 {} 个）", "warning: worksheets with failed rows were exported to errrows.xlsx ({} in total)"),
     ("精度需求 decimal({},{}) 超出 MySQL 上限，改用 double", "decimal({},{}) exceeds the MySQL limit, using double instead"),
+    ("  批量模式：当前目录共 {} 个 Excel 文件（各转全部 sheet）", "  batch mode: {} Excel file(s) in the current directory (all sheets each)"),
+    ("⚠ 数据区为空: 起始行 {} 已超出工作表范围（共 {} 行），已跳过该工作表", "warning: empty data area: start row {} is beyond the sheet ({} rows in total); worksheet skipped"),
     ("第 {} 列及之后有内容（{}），但字段名行只到 {} 列；请补齐字段名或删除多余列", "column {} and beyond have content ({}), but the header row stops at column {}; add header names or delete the extra columns"),
     ("  {} 字段名行位于纵向合并区 {}{}:{}{} 内，已取合并区左上角的内容作为字段名", "  {} header row falls inside the vertically merged range {}{}:{}{}; the top-left value was used as the column name"),
     ("字段名疑似标识类(手机/证件/账号)，按文本保存，样本最长 {} 字符", "the name looks like an identifier (phone / ID / account): stored as text, longest sample {} chars"),
@@ -1411,7 +1459,10 @@ const CATALOG: &[(&str, &str)] = &[
     ("无法解析 Excel 结构（Python 助手无有效输出）\n{}", "cannot parse the workbook structure (the Python helper produced no usable output)\n{}"),
     ("  ⚠ 「共几行」={} 超出工作表范围，已自动截断到第 {} 行", "  ! ROW_COUNT={} exceeds the sheet; truncated to row {}"),
     ("xlsxtomysql {} —— Excel → MySQL", "xlsxtomysql {} - Excel to MySQL"),
+    ("⚠ 第 {} 行（字段名称所在行）没有任何内容，已跳过该工作表", "warning: row {} (the header row) is empty; worksheet skipped"),
     ("「第一个数据所在行」({}) 必须大于「字段名称所在行」({})", "FIRST_DATA_ROW ({}) must be greater than HEADER_ROW ({})"),
+    ("「第一条数据所在行」({}) 必须大于「字段名称所在行」({})", "the first data row ({}) must be greater than the header row ({})"),
+    ("失败行已导出: {}（按源 sheet 分工作表，共 {} 个）", "failed rows exported to: {} (one worksheet per source sheet, {} in total)"),
     ("数值 {} 整数位超过 decimal({},{}) 允许的 {} 位", "number {} has more integer digits than decimal({},{}) permits: {}"),
     ("日期 {} 早于 1900 年，无法写入 datetime", "date year {} is before 1900 and cannot go into datetime"),
     ("读取 Excel 失败（Python 助手退出码 {}）\n{}", "reading Excel failed (Python helper exit code {})\n{}"),
@@ -1424,8 +1475,10 @@ const CATALOG: &[(&str, &str)] = &[
     ("\r\x1b[K{} [{}] {}%  {}/{} 行  已用 {}  剩余 {}", "\r\x1b[K{} [{}] {}%  {}/{} rows  elapsed {}  left {}"),
     ("已自动命名为 `{}`（如需自定义请补全 {}{} 单元格）", "renamed to `{}` automatically (fill in cell {}{} to customise)"),
     ("  ⚠ 检测到 {} 个隐藏行，其内容同样会被导出", "  ! {} hidden row(s); their content is exported as well"),
+    ("工作表编号 {} 超出范围（该文件共 {} 个工作表）", "worksheet index {} is out of range (the file has {} worksheets)"),
     ("抽样跳跃扫描（每 {} 行取 1 行，判定 {} 行）", "sampled scan (1 row in every {}, {} rows inspected)"),
     ("  {} 字段名行有 {} 处合并单元格，已自动填充{}", "  {} header row has {} merged range(s), filled automatically{}"),
+    ("⚠ 表名 '{}' 与前面的工作表重复，改用 {}_{}", "warning: table name '{}' conflicts with an earlier worksheet, renamed to {}_{}"),
     ("内容: {}；转换时会被当作普通数据行，建议删除", "content: {}; it will be converted as ordinary data, consider deleting it"),
     ("参数过多（{} 个），最后一个是可选的「共几行」", "too many arguments ({}); only the last one (ROW_COUNT) is optional"),
     ("打开 .xls 失败（可能已加密或损坏）: {}", "cannot open .xls (possibly encrypted or corrupt): {}"),
@@ -1436,16 +1489,22 @@ const CATALOG: &[(&str, &str)] = &[
     ("值为 {}，不含日期部分，无法写入 date", "value {} has no date part and cannot go into a date column"),
     ("另有 {} 处提醒（不阻断转换，建议检查）：", "{} additional notice(s) (conversion continues, but please review):"),
     ("整数超出 bigint 范围（样本 {}~{}）", "integers exceed the bigint range (sample {}~{})"),
+    ("这是一个目录，不是 Excel 文件: {}", "this is a directory, not an Excel file: {}"),
     ("失败明细（原文件行号，最多显示 {} 条）", "Failed rows (original row numbers, showing up to {})"),
     ("无法启动 Python 解释器 {}\n  {}", "cannot start the Python interpreter {}\n  {}"),
+    ("⚠ 表名已处理: '{}' → '{}'（{}）", "warning: table name adjusted: '{}' -> '{}' ({})"),
     ("值为 {}，不是整数，无法写入整数型字段", "value {} is not an integer and cannot go into an integer column"),
     ("未知选项 --{}（详见 --help）", "unknown option --{} (see --help)"),
+    ("行号参数需要是非负整数，收到: '{}'", "row-number arguments must be non-negative integers, got: '{}'"),
+    ("── 工作表「{}」（第 {}/{} 个）──", "-- worksheet [{}] ({}/{}) --"),
     ("值为 {}，不是数值，无法写入 {} 字段", "value {} is not numeric and cannot go into a {} column"),
     ("值为 {}，含小数，无法写入整数型字段", "value {} has a fraction and cannot go into an integer column"),
     ("数据区末尾有 {} 行空白，已自动忽略", "{} blank row(s) at the end of the data were ignored"),
     ("helper: 未知 mode {}", "helper: unknown mode {}"),
+    ("── 文件「{}」（第 {}/{} 个）──", "-- file [{}] ({}/{}) --"),
     ("工作表 {} 不存在。可用工作表: {}", "worksheet {} does not exist. Available sheets: {}"),
     ("未知选项 {}（详见 --help）", "unknown option {} (see --help)"),
+    ("读取工作表列表失败（退出码 {}）\n{}", "failed to list worksheets (exit code {})\n{}"),
     ("\r\x1b[K{} 完成: {} {}  用时 {}{}", "\r\x1b[K{} done: {} {}  in {}{}"),
     ("-- 字段数       : {}", "-- Columns      : {}"),
     ("-- 工作表       : {}", "-- Sheet        : {}"),
@@ -1480,12 +1539,14 @@ const CATALOG: &[(&str, &str)] = &[
     ("  可用工作表: {}", "  available sheets: {}"),
     ("导出失败行失败: {}", "cannot write the failed-rows workbook: {}"),
     ("生成 {} 失败: {}", "failed to create {}: {}"),
+    ("  {}「{}」 → {}", "  {}[{}] -> {}"),
     ("--{} 需要整数", "--{} expects an integer"),
     ("{} {}%  {}/{} 行", "{} {}%  {}/{} rows"),
     ("全量扫描 {} 行", "full scan of {} rows"),
     ("报表已保存: {}", "report saved: {}"),
     ("文件不存在: {}", "file not found: {}"),
     ("无法写入 {}: {}", "cannot write {}: {}"),
+    ("工作表「{}」", "worksheet [{}]"),
     ("{}（{} 个）", "{} ({} of them)"),
     ("完成: {}", "done: {}"),
     ("第 {} 行", "row {}"),
@@ -1685,14 +1746,24 @@ fn console_setup() {}
 const HELP_EN: &str = r#"xlsxtomysql - convert Excel into MySQL CREATE TABLE + INSERT statements (single-file Rust build)
 
 Usage:
-  xlsxtomysql FILE.xlsx  SHEET  TABLE  HEADER_ROW  FIRST_DATA_ROW  [ROW_COUNT]
+  xlsxtomysql [FILE] [SHEET] [TABLE] [HEADER_ROW] [FIRST_DATA_ROW] [ROW_COUNT]
+
+  Every positional argument is optional:
+  * omit FILE        -> batch-convert every .xls / .xlsx file in the current directory
+  * omit SHEET       -> convert ALL worksheets of the file; SHEET also accepts an
+                        index or a range expression: 2 = the 2nd worksheet,
+                        [1-3] or [1,3,5] = several worksheets
+  * omit TABLE       -> the sheet name is used as the table name (sanitized and
+                        truncated; a table name must not be all digits, those are
+                        parsed as row numbers)
+  * omit row numbers -> header row = 1, first data row = 2, rows = to the end
 
   FILE.xlsx       Excel 2007+ (.xlsx) or Excel 2003 (.xls)
-  SHEET           worksheet name
-  TABLE           new table name; also the output file name <TABLE>.sql
-  HEADER_ROW      1-based row number holding the column names
-  FIRST_DATA_ROW  1-based row number of the first data row
-  ROW_COUNT       optional, default: until the end of the file
+
+Notes for multi-sheet / batch mode:
+  each sheet writes its own <sheet-name>.sql next to the source file (--out is
+  not available); failed rows from all sheets are collected into one
+  errrows.xlsx, one worksheet per source sheet
 
 Main options:
   --out PATH              output .sql path (default: next to the source file as <TABLE>.sql)
@@ -1746,8 +1817,9 @@ const MAN_ZH: &str = r#"xlsxtomysql 手册
     xlsxtomysql —— 把 Excel（.xlsx / .xls）转换成 MySQL 建表语句与插入语句。
 
 用法
-    xlsxtomysql 文件名.xlsx sheet名 新表名 字段名称所在行 第一个数据所在行 [共几行] [选项...]
+    xlsxtomysql [文件名.xlsx] [sheet] [新表名] [字段名称所在行] [第一个数据所在行] [共几行] [选项...]
 
+    所有位置参数都可省略（规则见下）；省略文件名则进入批量模式。
     -h / --help   精简用法（选项速查）
     --man         本手册（参数细节、类型推断规则、退出码、已知限制）
     -V           版本号
@@ -1755,11 +1827,35 @@ const MAN_ZH: &str = r#"xlsxtomysql 手册
 位置参数
     文件名.xlsx       .xlsx（Excel 2007+）或 .xls（Excel 2003）。
                       读 .xls 需要 Python 侧装有 xlrd。
-    sheet名           工作表名，必须完全一致（错误提示里会列出可选工作表）。
+                      完全省略时：批量转换当前目录下所有 .xls / .xlsx 文件
+                      （跳过 ~$ 开头的 Excel 临时文件）。
+    sheet             三种写法：
+                      1) 工作表名（完全一致，错误提示里会列出可选工作表）；
+                      2) 编号，1 起算，如 2 表示第 2 个工作表；
+                      3) 区间/列表表达式，如 [1-3]、[1,3,5]、[1,3-5]
+                         （方括号可省；中英文逗号/分号均可作分隔）。
+                         匹配顺序：先按名字精确匹配，再按编号/表达式解析。
+                         省略时转换全部工作表。
     新表名            既是 CREATE TABLE 的表名，也是默认输出文件名 <新表名>.sql。
-    字段名称所在行     1 起算。允许落在纵向合并区内（程序回读合并区左上角的值）。
-    第一个数据所在行   1 起算，必须大于字段名称所在行。
-    共几行            可选。只转换这么多行数据；超出工作表范围会自动截断并提示。
+                      省略时用 sheet 名（非法字符自动处理、超长截断，处理结果
+                      会在报表里说明；多 sheet 重名时追加 _2、_3）。
+                      注意：表名不能是纯数字——新表名位置上的纯数字一律按
+                      「字段名称所在行」解析。
+    字段名称所在行     1 起算，默认 1。允许落在纵向合并区内（程序回读合并区
+                      左上角的值）。
+    第一个数据所在行   1 起算，默认「字段名称所在行 + 1」，必须大于字段名称所在行。
+    共几行            可选，默认到文件尾（0 也表示到文件尾）。超出工作表范围
+                      会自动截断并提示。
+
+多工作表与批量模式
+    当一次转换涉及多个工作表（省略 sheet、用区间/列表选中多个、或批量模式）时：
+      * 每个工作表在源文件同目录各生成一个 <表名>.sql，此时 --out 不可用；
+      * 也不能再指定新表名（各 sheet 用自己的名字）；
+      * 空数据区或空表头的工作表会被跳过并在报表中说明（全部为空时报错退出）；
+      * 所有失败行汇总进同一个 errrows.xlsx，按源 sheet 分工作表记录；
+      * 退出码聚合：任一 sheet 被非标准格式阻断 → 2；批量模式下某个文件
+        无法读取 → 1；否则 0。
+      * 结果表 3 · 批量汇总 会列出每个 sheet 的成功/失败行数与输出文件。
 
 选项
     输出与行为
@@ -1901,21 +1997,50 @@ Name
     xlsxtomysql - convert Excel (.xlsx / .xls) into MySQL CREATE TABLE + INSERT statements.
 
 Usage
-    xlsxtomysql FILE.xlsx SHEET TABLE HEADER_ROW FIRST_DATA_ROW [ROW_COUNT] [options...]
+    xlsxtomysql [FILE.xlsx] [SHEET] [TABLE] [HEADER_ROW] [FIRST_DATA_ROW] [ROW_COUNT] [options...]
 
+    Every positional argument is optional (see below); omitting the file enters batch mode.
     -h / --help   short usage (option cheat sheet)
     --man         this manual (option details, type rules, exit codes, limitations)
     -V            version
 
 Positional arguments
     FILE.xlsx      .xlsx (Excel 2007+) or .xls (Excel 2003). Reading .xls needs xlrd
-                   on the Python side.
-    SHEET          worksheet name; must match exactly (available names are listed on error).
+                   on the Python side. When omitted entirely: batch-convert every
+                   .xls / .xlsx file in the current directory (Excel ~$ temp files
+                   are skipped).
+    SHEET          one of:
+                   1) a worksheet name, matched exactly (available names are listed on error);
+                   2) a 1-based index, e.g. 2 = the second worksheet;
+                   3) a range/list expression such as [1-3], [1,3,5], [1,3-5]
+                      (brackets optional; commas/semicolons, ASCII or fullwidth, split items).
+                   Matching order: exact name first, then index/expression.
+                   When omitted, all worksheets are converted.
     TABLE          table name for CREATE TABLE, also the default output file <TABLE>.sql.
-    HEADER_ROW     1-based. May sit inside a vertical merge (the top-left value is read back).
-    FIRST_DATA_ROW 1-based, must be greater than HEADER_ROW.
-    ROW_COUNT      optional; convert only this many data rows. Values beyond the sheet are
-                   truncated with a notice.
+                   When omitted the sheet name is used (sanitized and truncated, with a
+                   notice in the report; duplicate names get _2, _3 suffixes).
+                   Note: a table name cannot be all digits -- all-digit tokens in the
+                   TABLE slot are parsed as HEADER_ROW.
+    HEADER_ROW     1-based, default 1. May sit inside a vertical merge (the top-left value
+                   is read back).
+    FIRST_DATA_ROW 1-based, default HEADER_ROW + 1; must be greater than HEADER_ROW.
+    ROW_COUNT      optional, default: to the end of the sheet (0 also means "to the end").
+                   Values beyond the sheet are truncated with a notice.
+
+Multi-sheet and batch mode
+    When one run covers several worksheets (no SHEET given, a range/list selected
+    several, or batch mode):
+      * each worksheet writes its own <table>.sql next to the source file; --out is
+        not available then;
+      * no custom table name either (each sheet uses its own name);
+      * worksheets with an empty data area or empty header row are skipped with a
+        notice (an all-empty selection is an error);
+      * failed rows from all sheets go into one errrows.xlsx, one worksheet per
+        source sheet;
+      * exit codes aggregate: any sheet blocked by a non-standard format -> 2; a file
+        that cannot be read at all (batch mode) -> 1; otherwise 0.
+      * "result table 3 - batch summary" lists success/failed rows and output file
+        per worksheet.
 
 Options
     Output and behaviour
@@ -2336,13 +2461,19 @@ fn parse_cell(tok: &str) -> Cell {
 // ===========================================================================
 // 参数
 // ===========================================================================
+#[derive(Clone)]
 struct Opts {
-    path: String,
-    sheet: String,
-    table: String,
+    path: String,      // 当前正在处理的文件（多文件批量时逐个填充）
+    sheet: String,     // 当前正在处理的工作表名
+    table: String,     // 当前工作表的最终表名
     header_row: i64,
     data_row: i64,
     rows: Option<i64>,
+
+    // 原始位置参数（多 sheet / 批量调度用）
+    pos_source: Option<String>,
+    sheet_spec: Option<String>,
+    table_arg: Option<String>,
 
     out: Option<String>,
     err_file: Option<String>,
@@ -2385,6 +2516,7 @@ impl Default for Opts {
         Opts {
             path: String::new(), sheet: String::new(), table: String::new(),
             header_row: 1, data_row: 2, rows: None,
+            pos_source: None, sheet_spec: None, table_arg: None,
             out: None, err_file: None, report: None,
             force: false, hints: true, progress: true, color: true,
             scan_only: false,
@@ -2402,14 +2534,21 @@ impl Default for Opts {
 const HELP_ZH: &str = r#"xlsxtomysql —— Excel 转 MySQL 建表 + 插入语句（Rust 单文件版）
 
 用法:
-  xlsxtomysql 文件名.xlsx  sheet名  新表名  字段名称所在行  第一个数据所在行  [共几行]
+  xlsxtomysql [文件名] [sheet] [新表名] [字段名称所在行] [第一个数据所在行] [共几行]
+
+  所有位置参数都可省略：
+  * 省略「文件名」        → 批量转换当前目录下所有 .xls / .xlsx 文件
+  * 省略「sheet」         → 转换该文件的所有工作表；sheet 也支持编号与区间：
+                            2 = 第 2 个工作表；[1-3]、[1,3,5] = 多个工作表
+  * 省略「新表名」        → 用 sheet 名做表名（非法字符自动处理、超长截断；
+                            表名不能是纯数字，纯数字会被当成行号参数）
+  * 省略行号              → 字段名称所在行 = 1，第一个数据所在行 = 2，共几行 = 到文件尾
 
   文件名.xlsx      支持 Excel 2007+ (.xlsx) 与 Excel 2003 (.xls)
-  sheet名          工作表名
-  新表名           生成的表名，同时作为输出文件名 <新表名>.sql
-  字段名称所在行   表头所在行号（从 1 开始）
-  第一个数据所在行 第一条数据所在行号
-  共几行           可选，默认直到文件尾
+
+多 sheet / 批量模式说明:
+  每个工作表在源文件同目录各生成一个 <sheet名>.sql（此时 --out 不可用）；
+  所有 sheet 的失败行汇总进同一个 errrows.xlsx，按源 sheet 分工作表记录。
 
 主要选项:
   --out PATH              输出 sql 路径（默认 源文件同目录/<新表名>.sql）
@@ -2583,27 +2722,35 @@ fn parse_args(argv: Vec<String>) -> Result<Opts, CliError> {
         st.i += 1;
     }
 
-    if pos.len() < 5 {
+    // 位置参数全部可省略：
+    //   文件名 [sheet] [新表名] [字段行] [数据行] [共几行]
+    // 新表名不能是纯数字（纯数字一律按行号解析），因此可以在省略表名的同时给行号。
+    if pos.len() > 6 {
         return Err(CliError::usage(format!(
-            "参数不足：需要 文件名 sheet名 新表名 字段名称所在行 第一个数据所在行 [共几行]，实际给了 {} 个\n详见 --help",
+            "位置参数过多（{} 个）：最多为 文件名 sheet 新表名 字段行 数据行 共几行；详见 --help",
             pos.len())));
     }
-    if pos.len() > 6 {
-        return Err(CliError::usage(format!("参数过多（{} 个），最后一个是可选的「共几行」", pos.len())));
+    let mut rest = pos.clone();
+    o.pos_source = if rest.is_empty() { None } else { Some(rest.remove(0)) };
+    o.sheet_spec = if rest.is_empty() { None } else { Some(rest.remove(0)) };
+    if !rest.is_empty() && !is_digits(rest[0].trim()) {
+        o.table_arg = Some(rest.remove(0));
     }
-    o.path = pos[0].clone();
-    o.sheet = pos[1].clone();
-    o.table = pos[2].clone();
-    o.header_row = pos[3].parse()
-        .map_err(|_| CliError::usage("「字段名称所在行」需要是正整数"))?;
-    o.data_row = pos[4].parse()
-        .map_err(|_| CliError::usage("「第一个数据所在行」需要是正整数"))?;
-    if pos.len() == 6 {
-        let n: i64 = pos[5].parse()
-            .map_err(|_| CliError::usage("「共几行」需要是非负整数"))?;
-        if n < 0 {
-            return Err(CliError::usage("「共几行」不能是负数"));
+    if rest.len() > 3 {
+        return Err(CliError::usage(
+            "位置参数过多：新表名之后最多跟 3 个行号（字段行 数据行 共几行）"));
+    }
+    let mut nums: Vec<i64> = Vec::with_capacity(rest.len());
+    for t in &rest {
+        let s = t.trim();
+        if !is_digits(s) {
+            return Err(CliError::usage(format!("行号参数需要是非负整数，收到: '{}'", t)));
         }
+        nums.push(s.parse().unwrap_or(0));
+    }
+    o.header_row = nums.first().copied().unwrap_or(1);
+    o.data_row = nums.get(1).copied().unwrap_or(o.header_row + 1);
+    if let Some(&n) = nums.get(2) {
         if n > 0 {
             o.rows = Some(n);
         }
@@ -2611,14 +2758,99 @@ fn parse_args(argv: Vec<String>) -> Result<Opts, CliError> {
     if o.header_row < 1 {
         return Err(CliError::usage("「字段名称所在行」从 1 开始，不能小于 1"));
     }
-    if o.data_row < 1 {
-        return Err(CliError::usage("「第一个数据所在行」从 1 开始，不能小于 1"));
-    }
     if o.data_row <= o.header_row {
         return Err(CliError::usage(format!(
-            "「第一个数据所在行」({}) 必须大于「字段名称所在行」({})", o.data_row, o.header_row)));
+            "「第一条数据所在行」({}) 必须大于「字段名称所在行」({})", o.data_row, o.header_row)));
     }
     Ok(o)
+}
+
+fn is_digits(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_digit())
+}
+
+// ===========================================================================
+// 工作表选择：名称 / 编号 / 区间表达式（[1-3]、[1,3,5]）
+// ===========================================================================
+
+fn is_sheet_expr(s: &str) -> bool {
+    s.chars().all(|c| c.is_ascii_digit() || c.is_whitespace()
+        || matches!(c, ',' | '-' | '，' | ';' | '；'))
+}
+
+/// 解析单个表达式项 "3" / "1-3" → (小, 大)；不是这个语法返回 None。
+fn parse_sheet_item(item: &str) -> Option<(i64, i64)> {
+    let t: String = item.chars().filter(|c| !c.is_whitespace()).collect();
+    if t.is_empty() {
+        return None;
+    }
+    if let Some((a, b)) = t.split_once('-') {
+        if !is_digits(a) || !is_digits(b) {
+            return None;
+        }
+        let av: i64 = a.parse().ok()?;
+        let bv: i64 = b.parse().ok()?;
+        return Some((av.min(bv), av.max(bv)));
+    }
+    if is_digits(&t) {
+        let v: i64 = t.parse().ok()?;
+        return Some((v, v));
+    }
+    None
+}
+
+/// 把 sheet 表达式解析成 0 起下标（升序去重）。
+/// Ok(None) = 不是表达式语法（交由调用方按「名字不存在」报错）。
+fn parse_sheet_indexes(spec: &str, count: usize) -> Result<Option<Vec<usize>>, CliError> {
+    let mut s = spec.trim();
+    if s.starts_with('[') && s.ends_with(']') {
+        s = s[1..s.len() - 1].trim();
+    }
+    if s.is_empty() || !is_sheet_expr(s) {
+        return Ok(None);
+    }
+    let mut set = std::collections::BTreeSet::new();
+    for item in s.split([',', '，', ';', '；']) {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        match parse_sheet_item(item) {
+            None => return Ok(None),
+            Some((a, b)) => {
+                if a < 1 || b as usize > count {
+                    return Err(CliError::usage(format!(
+                        "工作表编号 {} 超出范围（该文件共 {} 个工作表）",
+                        item, human_num(count as i64))));
+                }
+                for k in a..=b {
+                    set.insert((k - 1) as usize);
+                }
+            }
+        }
+    }
+    if set.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(set.into_iter().collect()))
+}
+
+/// 按「精确名字 > 编号/表达式」的顺序解析 sheet 选择器，返回 0 起下标。
+fn select_sheet_indexes(spec: Option<&str>, names: &[String]) -> Result<Vec<usize>, CliError> {
+    match spec {
+        None => Ok((0..names.len()).collect()),
+        Some(sp) => {
+            if let Some(i) = names.iter().position(|n| n == sp) {
+                return Ok(vec![i]);
+            }
+            match parse_sheet_indexes(sp, names.len())? {
+                Some(v) => Ok(v),
+                None => Err(CliError::usage(format!(
+                    "工作表 '{}' 不存在。可用工作表: {}\n也可以用编号（1~{}）或区间形式（如 [1-3]、[1,3,5]）",
+                    sp, names.join(sep()), names.len()))),
+            }
+        }
+    }
 }
 
 
@@ -2826,9 +3058,30 @@ fn run_helper_once(py: &str, args: &[String], stdin_data: Option<&str>) -> Resul
     ))
 }
 
+/// 列出工作簿的全部 sheet 名（helper 的 list 模式，不读内容）。
+fn helper_list_sheets(py: &str, path: &str) -> Result<Vec<String>, CliError> {
+    let args = vec!["list".to_string(), path.to_string()];
+    let (code, stdout, stderr) = run_helper_once(py, &args, None)?;
+    if let Some((c, m)) = fatal_from_stdout(&stdout) {
+        return Err(CliError::new(m, c));
+    }
+    if code != 0 {
+        return Err(CliError::general(format!(
+            "读取工作表列表失败（退出码 {}）\n{}", code, stderr_tail(&stderr, 5))));
+    }
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("#SHEETS\t") {
+            if rest.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(rest.split('\t').map(unescape).collect());
+        }
+    }
+    Ok(Vec::new())
+}
+
 /// 从 #FATAL<tab>退出码<tab>消息 中取回 (退出码, 消息)
-fn fatal_from_stdout(stdout: &str) -> Option<(i32, String)> {
-    stdout.lines().find_map(|l| {
+fn fatal_from_stdout(stdout: &str) -> Option<(i32, String)> {    stdout.lines().find_map(|l| {
         let rest = l.strip_prefix("#FATAL\t")?;
         let (code, msg) = rest.split_once('\t')?;
         Some((code.trim().parse().unwrap_or(EXIT_ERROR), unescape(msg)))
@@ -4379,36 +4632,73 @@ fn append_tail_comment(path: &str, ok: i64, failed: i64, elapsed: f64) -> io::Re
 }
 
 // ===========================================================================
-// 失败行导出
+// 失败行导出（支持多工作表：多 sheet / 批量模式按源 sheet 分工作表聚合）
 // ===========================================================================
-fn write_errrows(py: &str, path: &str, cols: &[Col], fails: &[(i64, Vec<String>, String)])
-    -> Result<bool, CliError>
-{
-    if fails.is_empty() {
-        return Ok(false);
+struct ErrGroup {
+    name: String,
+    cols: Vec<Col>,
+    fails: Vec<(i64, Vec<String>, String)>,
+}
+
+/// 把源 sheet 名变成合法且不重复的 Excel 工作表名（≤31 字符）。
+fn err_sheet_name(raw: &str, used: &mut std::collections::BTreeMap<String, i64>) -> String {
+    let mut s: String = raw
+        .chars()
+        .map(|c| if matches!(c, '\\' | '/' | '*' | '?' | ':' | '[' | ']') { '_' } else { c })
+        .collect();
+    s = s.trim().to_string();
+    if s.is_empty() {
+        s = "errrows".into();
     }
-    let mut payload = String::new();
+    s = s.chars().take(31).collect();
+    let cnt = used.entry(s.clone()).or_insert(0);
+    *cnt += 1;
+    if *cnt > 1 {
+        let base: String = s.chars().take(28).collect();
+        s = format!("{}_{}", base, cnt);
+    }
+    s
+}
+
+fn err_group_payload(g: &ErrGroup, payload: &mut String) {
+    payload.push_str("S\t");
+    payload.push_str(&escape(&g.name));
+    payload.push('\n');
     payload.push('H');
     payload.push('\t');
     payload.push_str(&t("原行号"));
-    for c in cols {
+    for c in &g.cols {
         payload.push('\t');
         payload.push_str(&escape(if c.orig.is_empty() { &c.name } else { &c.orig }));
     }
     payload.push('\t');
     payload.push_str(&t("失败原因"));
     payload.push('\n');
-    for (row, texts, reason) in fails {
+    for (row, texts, reason) in &g.fails {
         payload.push('R');
         payload.push('\t');
         payload.push_str(&row.to_string());
-        for t in texts {
+        for tx in texts {
             payload.push('\t');
-            payload.push_str(&escape(t));
+            payload.push_str(&escape(tx));
         }
         payload.push('\t');
         payload.push_str(&escape(reason));
         payload.push('\n');
+    }
+}
+
+fn write_errrows_groups(py: &str, path: &str, groups: &[ErrGroup]) -> Result<bool, CliError> {
+    let groups: Vec<&ErrGroup> = groups.iter().filter(|g| !g.fails.is_empty()).collect();
+    if groups.is_empty() {
+        return Ok(false);
+    }
+    let mut used = std::collections::BTreeMap::new();
+    let mut payload = String::new();
+    for g in &groups {
+        let g2 = ErrGroup { name: err_sheet_name(&g.name, &mut used),
+                            cols: g.cols.clone(), fails: g.fails.clone() };
+        err_group_payload(&g2, &mut payload);
     }
     let args = vec!["errrows".to_string(), path.to_string()];
     let (code, stdout, stderr) = run_helper_once(py, &args, Some(&payload))?;
@@ -4420,6 +4710,17 @@ fn write_errrows(py: &str, path: &str, cols: &[Col], fails: &[(i64, Vec<String>,
             "导出失败行失败（退出码 {}）\n{}", code, stderr_tail(&stderr, 5))));
     }
     Ok(true)
+}
+
+fn write_errrows(py: &str, path: &str, cols: &[Col], fails: &[(i64, Vec<String>, String)])
+    -> Result<bool, CliError>
+{
+    if fails.is_empty() {
+        return Ok(false);
+    }
+    let g = ErrGroup { name: "errrows".to_string(),
+                       cols: cols.to_vec(), fails: fails.to_vec() };
+    write_errrows_groups(py, path, &[g])
 }
 
 // ===========================================================================
@@ -4613,16 +4914,219 @@ fn main() {
     std::process::exit(code);
 }
 
+// ===========================================================================
+// 多 sheet / 批量调度
+// ===========================================================================
+const CONVERT_SKIPPED: i32 = -1;   // convert_one 的返回码：该 sheet 被跳过
+
+type Fails = Vec<(i64, Vec<String>, String)>;
+
+struct MultiCtx {
+    out_err: String,
+    err_items: Vec<ErrGroup>,
+    summary: Vec<Vec<String>>,
+    any_block: bool,
+    any_error: bool,
+    err_written: bool,
+}
+
+impl MultiCtx {
+    fn new(out_err: String) -> Self {
+        MultiCtx { out_err, err_items: Vec::new(), summary: Vec::new(),
+                   any_block: false, any_error: false, err_written: false }
+    }
+
+    fn flush_errrows(&mut self, py: &str, st: Style, out: &mut Out) -> Result<(), CliError> {
+        if !self.err_items.is_empty() && !self.err_written {
+            let n = self.err_items.len();
+            if write_errrows_groups(py, &self.out_err, &self.err_items)? {
+                self.err_written = true;
+                out.line(&st.dim(&format!("失败行已导出: {}（按源 sheet 分工作表，共 {} 个）",
+                                          self.out_err, n)));
+            }
+        }
+        Ok(())
+    }
+
+    fn exit_code(&self) -> i32 {
+        if self.any_block { EXIT_FORMAT }
+        else if self.any_error { EXIT_ERROR }
+        else { EXIT_OK }
+    }
+}
+
+fn basename(p: &str) -> String {
+    Path::new(p).file_name().map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| p.to_string())
+}
+
 fn run(opts: &Opts, st: Style, out: &mut Out) -> Result<i32, CliError> {
     let py = find_python(opts);
+    if opts.pos_source.is_none() {
+        if opts.out.is_some() {
+            return Err(CliError::usage(
+                "批量模式（未指定文件）会为每个 sheet 各生成一个 sql，不能使用 --out 指定单一输出文件"));
+        }
+        return run_directory(opts, &py, st, out);
+    }
+    run_one_file(opts, &py, st, out, None)
+}
+
+fn run_directory(opts: &Opts, py: &str, st: Style, out: &mut Out) -> Result<i32, CliError> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut files: Vec<String> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&cwd) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_file() { continue; }
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("~$") { continue; }
+            let lower = name.to_lowercase();
+            if lower.ends_with(".xlsx") || lower.ends_with(".xls") {
+                files.push(name);
+            }
+        }
+    }
+    files.sort();
+    if files.is_empty() {
+        return Err(CliError::usage("当前目录没有找到 .xls / .xlsx 文件"));
+    }
+    out.line(&st.bold(&format!("xlsxtomysql {} —— Excel → MySQL", VERSION)));
+    out.line(&st.dim(&format!("  批量模式：当前目录共 {} 个 Excel 文件（各转全部 sheet）",
+                              human_num(files.len() as i64))));
+    let out_err = join_path(&cwd.to_string_lossy(), &["errrows.xlsx"]);
+    let mut ctx = MultiCtx::new(out_err);
+    let n = files.len();
+    for (i, f) in files.iter().enumerate() {
+        out.blank();
+        out.line(&st.bold(&format!("── 文件「{}」（第 {}/{} 个）──", f, i + 1, n)));
+        let mut o2 = opts.clone();
+        o2.pos_source = Some(f.clone());
+        if let Err(e) = run_one_file(&o2, py, st, out, Some(&mut ctx)) {
+            out.line(&st.red(&format!("× {}", e.msg)));
+            ctx.any_error = true;
+        }
+    }
+    out.blank();
+    out.line(&st.bold("结果表 3 · 批量汇总"));
+    out.line(&render_table(&["文件", "工作表", "成功", "失败", "输出 sql"], &ctx.summary));
+    ctx.flush_errrows(py, st, out)?;
+    let bad = ctx.summary.iter().filter(|r| r[3] != "0" && r[3] != "-").count();
+    if bad > 0 {
+        out.line(&st.yellow(&format!(
+            "⚠ 有失败行的 sheet 已汇总到 errrows.xlsx（共 {} 个）", bad)));
+    }
+    Ok(ctx.exit_code())
+}
+
+fn run_one_file(opts: &Opts, py: &str, st: Style, out: &mut Out,
+                ctx: Option<&mut MultiCtx>) -> Result<i32, CliError> {
+    let src = opts.pos_source.clone().unwrap_or_default();
+    if !Path::new(&src).exists() {
+        return Err(CliError::new(format!("文件不存在: {}", src), EXIT_USAGE));
+    }
+    if Path::new(&src).is_dir() {
+        return Err(CliError::new(
+            format!("这是一个目录，不是 Excel 文件: {}", src), EXIT_USAGE));
+    }
+    let names = helper_list_sheets(py, &src)?;
+    let idxs = select_sheet_indexes(opts.sheet_spec.as_deref(), &names)?;
+    let selected: Vec<String> = idxs.iter().map(|&i| names[i].clone()).collect();
+    let multi = opts.sheet_spec.is_none() || selected.len() > 1;
+    if multi && opts.out.is_some() {
+        return Err(CliError::usage(
+            "同时转换多个工作表时会按 sheet 名各生成一个 sql，不能使用 --out 指定单一输出文件"));
+    }
+    if multi && opts.table_arg.is_some() {
+        return Err(CliError::usage(
+            "同时转换多个工作表时不能指定新表名（各 sheet 用自己的名字）"));
+    }
+    let out_err = opts.err_file.clone()
+        .unwrap_or_else(|| default_side_path(&src, "errrows.xlsx"));
+    let mut local_ctx;
+    let ctx: &mut MultiCtx = match ctx {
+        Some(c) => c,
+        None => { local_ctx = MultiCtx::new(out_err.clone()); &mut local_ctx }
+    };
+
+    let mut used_tables: std::collections::BTreeMap<String, i64> =
+        std::collections::BTreeMap::new();
+    let n = selected.len();
+    for (ki, sh) in selected.iter().enumerate() {
+        let k = ki + 1;
+        if multi {
+            out.blank();
+            out.line(&st.bold(&format!("── 工作表「{}」（第 {}/{} 个）──", sh, k, n)));
+        }
+        let raw = opts.table_arg.clone().unwrap_or_else(|| sh.clone());
+        let (tname0, tnote) = sanitize_ident(&raw, "t", opts.max_ident);
+        let mut tname = tname0.clone();
+        let cnt = used_tables.entry(tname.clone()).or_insert(0);
+        *cnt += 1;
+        if *cnt > 1 {
+            out.line(&st.yellow(&format!(
+                "⚠ 表名 '{}' 与前面的工作表重复，改用 {}_{}", tname, tname, cnt)));
+            tname = format!("{}_{}", tname, cnt);
+        }
+        if !tnote.is_empty() {
+            let label = if opts.table_arg.is_some() {
+                raw.clone()
+            } else {
+                format!("工作表「{}」", sh)
+            };
+            out.line(&st.yellow(&format!(
+                "⚠ 表名已处理: '{}' → '{}'（{}）", label, tname,
+                tnote.trim_start_matches('、'))));
+        }
+
+        let mut o2 = opts.clone();
+        o2.path = src.clone();
+        o2.sheet = sh.clone();
+        o2.table = tname.clone();
+        let (code, cols, fails, ok_rows, _total) = convert_one(&o2, py, st, out, multi)?;
+        if code == CONVERT_SKIPPED {
+            ctx.summary.push(vec![basename(&src), sh.clone(),
+                                  "0".into(), "0".into(), "（已跳过）".into()]);
+            continue;
+        }
+        if code == EXIT_FORMAT {
+            ctx.any_block = true;
+        }
+        let out_cell = if opts.scan_only {
+            "（仅扫描）".to_string()
+        } else {
+            opts.out.clone()
+                .unwrap_or_else(|| default_side_path(&src, &format!("{}.sql", tname)))
+        };
+        ctx.summary.push(vec![basename(&src), sh.clone(),
+                              human_num(ok_rows), human_num(fails.len() as i64), out_cell]);
+        if !fails.is_empty() {
+            ctx.err_items.push(ErrGroup { name: sh.clone(), cols, fails });
+        }
+    }
+    if multi {
+        ctx.flush_errrows(py, st, out)?;
+    }
+    Ok(ctx.exit_code())
+}
+
+fn convert_one(opts: &Opts, py: &str, st: Style, out: &mut Out, multi: bool)
+    -> Result<(i32, Vec<Col>, Fails, i64, i64), CliError>
+{
     if !Path::new(&opts.path).exists() {
         return Err(CliError::new(format!("文件不存在: {}", opts.path), EXIT_USAGE));
     }
-    out.line(&st.bold(&format!("xlsxtomysql {} —— Excel → MySQL", VERSION)));
+    if multi {
+        out.line(&st.bold(&format!("xlsxtomysql {}", VERSION)));
+        out.line(&st.dim(&format!("  {}「{}」 → {}",
+                                  basename(&opts.path), opts.sheet, opts.table)));
+    } else {
+        out.line(&st.bold(&format!("xlsxtomysql {} —— Excel → MySQL", VERSION)));
+    }
     out.blank();
 
     // ---------------- 阶段 0: 探测 ----------------
-    let probe = do_probe(&py, opts)?;
+    let probe = do_probe(py, opts)?;
     out.line(&format!("{} {}", st.cyan("文件格式:"), probe.kind));
     out.line(&format!("{} {}  （{} 行 × {} 列）", st.cyan("工作表  :"),
                       opts.sheet, human_num(probe.n_rows), probe.n_cols));
@@ -4671,6 +5175,12 @@ fn run(opts: &Opts, st: Style, out: &mut Out) -> Result<i32, CliError> {
         }
     }
     if last_row < opts.data_row {
+        if multi {
+            out.line(&st.yellow(&format!(
+                "⚠ 数据区为空: 起始行 {} 已超出工作表范围（共 {} 行），已跳过该工作表",
+                opts.data_row, human_num(probe.n_rows))));
+            return Ok((CONVERT_SKIPPED, Vec::new(), Vec::new(), 0, 0));
+        }
         return Err(CliError::new(format!(
             "数据区为空: 起始行 {} 已超出工作表范围（共 {} 行）",
             opts.data_row, human_num(probe.n_rows)), EXIT_USAGE));
@@ -4707,7 +5217,7 @@ fn run(opts: &Opts, st: Style, out: &mut Out) -> Result<i32, CliError> {
         plan.warm.to_string(), max_read.to_string(),
     ];
     let label_scan = t("扫描中");
-    let mut s1 = Stream::start(&py, &dump_args, &label_scan, opts.progress)?;
+    let mut s1 = Stream::start(py, &dump_args, &label_scan, opts.progress)?;
 
     let mut header: Option<Vec<Cell>> = None;
     let mut cols: Vec<Col> = Vec::new();
@@ -4758,6 +5268,12 @@ fn run(opts: &Opts, st: Style, out: &mut Out) -> Result<i32, CliError> {
                 let width = last_non_empty(&h);
                 if width == 0 {
                     s1.kill();
+                    if multi {
+                        out.line(&st.yellow(&format!(
+                            "⚠ 第 {} 行（字段名称所在行）没有任何内容，已跳过该工作表",
+                            opts.header_row)));
+                        return Ok((CONVERT_SKIPPED, Vec::new(), Vec::new(), 0, 0));
+                    }
                     return Err(CliError::new(format!(
                         "第 {} 行（字段名称所在行）没有任何内容，请检查行号参数是否正确",
                         opts.header_row), EXIT_USAGE));
@@ -4876,7 +5392,7 @@ MySQL 的 datetime 不存时区，偏移量已被丢弃、只保留字面时间�
         report_types(out, st, &cols);
         out.blank();
         out.line(&st.cyan("仅扫描模式，未生成 sql。"));
-        return Ok(EXIT_OK);
+        return Ok((EXIT_OK, cols, Vec::new(), 0, 0));
     }
 
     let blockers = issues.iter().filter(|i| i.level == "block").count();
@@ -4884,7 +5400,7 @@ MySQL 的 datetime 不存时区，偏移量已被丢弃、只保留字面时间�
         out.blank();
         out.line(&st.red(&format!("发现 {} 处非标准格式，已中止转换（未生成 sql）。", blockers)));
         out.line("请按上面的位置提示处理源文件后重新执行；确需强行转换可追加 --force");
-        return Ok(EXIT_FORMAT);
+        return Ok((EXIT_FORMAT, Vec::new(), Vec::new(), 0, 0));
     }
 
     // ---------------- 阶段 2: 转换 ----------------
@@ -4916,7 +5432,7 @@ MySQL 的 datetime 不存时区，偏移量已被丢弃、只保留字面时间�
         "0".to_string(), "0".to_string(),
     ];
     let label_conv = t("转换中");
-    let mut s2 = Stream::start(&py, &conv_args, &label_conv, opts.progress)?;
+    let mut s2 = Stream::start(py, &conv_args, &label_conv, opts.progress)?;
 
     let mut ok_rows = 0i64;
     let mut skipped_empty = 0i64;
@@ -5003,7 +5519,11 @@ MySQL 的 datetime 不存时区，偏移量已被丢弃、只保留字面时间�
     guard.commit()
         .map_err(|e| CliError::general(format!("生成 {} 失败: {}", out_sql, e)))?;
 
-    let wrote_err = write_errrows(&py, &out_err, &cols, &fails)?;
+    let wrote_err = if multi {
+        false   // multi 模式下失败行由调用方聚合后统一导出
+    } else {
+        write_errrows(py, &out_err, &cols, &fails)?
+    };
 
     let info = RunInfo {
         opts, kind: &probe.kind, out_sql: &out_sql,
@@ -5014,5 +5534,5 @@ MySQL 的 datetime 不存时区，偏移量已被丢弃、只保留字面时间�
     report_types(out, st, &cols);
     out.blank();
     out.line(&st.bold(&format!("完成: {}", out_sql)));
-    Ok(EXIT_OK)
+    Ok((EXIT_OK, cols, fails, ok_rows, total_rows))
 }

@@ -1,4 +1,4 @@
-xlsxtomysql 2.2.0 - Excel to MySQL
+xlsxtomysql 2.3.0 - Excel to MySQL
 
 format: Excel 2007+ (.xlsx)
 sheet  : 学生信息  (6 rows x 8 cols)
@@ -23,7 +23,7 @@ Report 1 · Conversion result
 │ Warnings           │ 0                     │
 │ Blank rows skipped │ 0                     │
 │ Scan mode          │ full scan of 5 rows   │
-│ Elapsed            │ 654 ms                │
+│ Elapsed            │ 486 ms                │
 │ Output file        │ examples/students.sql │
 └────────────────────┴───────────────────────┘
 

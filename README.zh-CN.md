@@ -150,6 +150,17 @@ python3 py_helper.py probe 数据.xlsx Sheet1     # 探测文件 / 工作表 / �
 # 基本用法：字段名在第 1 行，数据从第 2 行开始，直到文件尾
 xlsxtomysql 学生名单.xlsx Sheet1 students 1 2
 
+# 转换文件里的所有工作表，每个 sheet 各生成一个 <sheet名>.sql
+xlsxtomysql 学生名单.xlsx
+
+# 按编号选第 2 个工作表；或一次选多个（区间 / 列表）
+xlsxtomysql 学生名单.xlsx 2 orders
+xlsxtomysql 学生名单.xlsx "[1-3]"
+xlsxtomysql 学生名单.xlsx "[1,3,5]"
+
+# 批量模式：转换当前目录下所有 .xls / .xlsx 文件（各转全部 sheet）
+xlsxtomysql
+
 # 只取 300 行；输出到指定路径；把报表另存一份
 xlsxtomysql 大表.xlsx 明细 orders 2 3 300 --out ./orders.sql --report ./orders.txt
 
@@ -160,20 +171,25 @@ xlsxtomysql 名单.xlsx Sheet1 students 1 2 --scan-only
 xlsxtomysql 脏表.xlsx 数据 tmp 1 2 --force --err-file ./errrows.xlsx
 ```
 
-位置参数（顺序固定）：
+位置参数（顺序固定，**全部可省略**）：
 
 ```
-xlsxtomysql 文件名.xlsx  sheet名  新表名  字段名称所在行  第一个数据所在行  [共几行]
+xlsxtomysql [文件名.xlsx]  [sheet]  [新表名]  [字段名称所在行]  [第一个数据所在行]  [共几行]
 ```
 
-| 参数 | 说明 |
-|---|---|
-| `文件名.xlsx` | 支持 Excel 2007+（`.xlsx`）与 Excel 2003（`.xls`） |
-| `sheet名` | 工作表名；不存在时会列出该文件的所有工作表 |
-| `新表名` | 表名，同时作为输出文件名 `<新表名>.sql` |
-| `字段名称所在行` | 表头行号，从 1 开始 |
-| `第一个数据所在行` | 第一条数据行号 |
-| `共几行` | 可选，省略则直到文件尾；`0` 也表示到文件尾 |
+| 参数 | 说明 | 省略时的默认行为 |
+|---|---|---|
+| `文件名.xlsx` | 支持 Excel 2007+（`.xlsx`）与 Excel 2003（`.xls`） | 批量转换当前目录下所有 `.xls`/`.xlsx` 文件 |
+| `sheet` | 工作表名、编号（`2` = 第 2 个）或区间/列表表达式（`[1-3]`、`[1,3,5]`，方括号可省） | 转换全部工作表 |
+| `新表名` | 表名，同时作为输出文件名 `<新表名>.sql`；不能是纯数字 | 用（合法化后的）sheet 名 |
+| `字段名称所在行` | 表头行号，从 1 开始 | `1` |
+| `第一个数据所在行` | 第一条数据行号 | 字段名称所在行 + 1 |
+| `共几行` | `0` 也表示到文件尾 | 到文件尾 |
+
+多 sheet / 批量模式的行为：每个工作表在源文件同目录各生成一个 `<表名>.sql`
+（此时 `--out` 与自定义表名不可用）；没有数据的工作表自动跳过并说明；
+**所有 sheet 的失败行汇总进同一个 errrows.xlsx，按源 sheet 分工作表记录**；
+最后输出「结果表 3 · 批量汇总」，逐 sheet 列出成功/失败行数与输出文件。
 
 ### 一个完整例子
 

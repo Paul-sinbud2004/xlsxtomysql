@@ -150,6 +150,17 @@ The interpreter is looked up in this order:
 # headers on row 1, data from row 2, until the end of the sheet
 xlsxtomysql students.xlsx Sheet1 students 1 2
 
+# every worksheet of the file, each into its own <sheet-name>.sql
+xlsxtomysql students.xlsx
+
+# the 2nd worksheet into a named table; or a whole range of sheets
+xlsxtomysql students.xlsx 2 orders
+xlsxtomysql students.xlsx "[1-3]"
+xlsxtomysql students.xlsx "[1,3,5]"
+
+# batch mode: convert every .xls / .xlsx file in the current directory (all sheets)
+xlsxtomysql
+
 # only 300 rows, custom output path, and save the report too
 xlsxtomysql big.xlsx Detail orders 2 3 300 --out ./orders.sql --report ./orders.txt
 
@@ -160,20 +171,26 @@ xlsxtomysql students.xlsx Sheet1 students 1 2 --scan-only
 xlsxtomysql dirty.xlsx Data tmp 1 2 --force --err-file ./errrows.xlsx
 ```
 
-Positional arguments, in this fixed order:
+Positional arguments, in this fixed order — **every one of them is optional**:
 
 ```
-xlsxtomysql FILE.xlsx  SHEET  TABLE  HEADER_ROW  FIRST_DATA_ROW  [ROW_COUNT]
+xlsxtomysql [FILE.xlsx]  [SHEET]  [TABLE]  [HEADER_ROW]  [FIRST_DATA_ROW]  [ROW_COUNT]
 ```
 
-| Argument | Meaning |
-|---|---|
-| `FILE.xlsx` | `.xlsx` (Excel 2007+) or `.xls` (Excel 2003) |
-| `SHEET` | worksheet name; if it does not exist, all worksheet names are listed |
-| `TABLE` | table name, also the default output file name `<TABLE>.sql` |
-| `HEADER_ROW` | 1-based row number holding the column names |
-| `FIRST_DATA_ROW` | 1-based row number of the first data row |
-| `ROW_COUNT` | optional; omit (or pass `0`) to read to the end of the sheet |
+| Argument | Meaning | Default when omitted |
+|---|---|---|
+| `FILE.xlsx` | `.xlsx` (Excel 2007+) or `.xls` (Excel 2003) | omitted → batch mode: every `.xls`/`.xlsx` in the current directory |
+| `SHEET` | a worksheet name, a 1-based index (`2` = second sheet), or a range/list expression (`[1-3]`, `[1,3,5]`; brackets optional) | all worksheets |
+| `TABLE` | table name, also the default output file name `<TABLE>.sql`; must not be all digits | the (sanitized) sheet name |
+| `HEADER_ROW` | 1-based row number holding the column names | `1` |
+| `FIRST_DATA_ROW` | 1-based row number of the first data row | `HEADER_ROW + 1` |
+| `ROW_COUNT` | number of data rows (`0` also means "to the end") | to the end of the sheet |
+
+Multi-sheet / batch behaviour: each worksheet writes its own `<table>.sql` next to the
+source file (`--out` and a custom `TABLE` are not available then); sheets with no data
+are skipped with a notice; failed rows from **all** sheets are collected into one
+`errrows.xlsx` with one worksheet per source sheet; a "result table 3 - batch summary"
+lists every sheet with its success/failed counts and output file.
 
 ### A worked example
 

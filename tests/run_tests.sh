@@ -382,5 +382,88 @@ else
   no "man page 与手册已不同步（跑 tools/gen_man.py 重新生成）"
 fi
 
+
+echo "== 17. 多 sheet 缺省参数 / 批量模式 =="
+
+# 不指定 sheet → 转全部，每 sheet 一个 <sheet名>.sql；无数据的「说明」表被跳过
+rm -f "$D/第一张表.sql" "$D/第二张表.sql" "$D/说明.sql"
+run 0 "不指定 sheet → 转全部" "$TMP/17a.txt" "$D/08_multi_sheet.xlsx"
+[ -f "$D/第一张表.sql" ] && ok "生成 第一张表.sql" || no "生成 第一张表.sql"
+[ -f "$D/第二张表.sql" ] && ok "生成 第二张表.sql" || no "生成 第二张表.sql"
+expect_grep "无数据的说明表被跳过" "$TMP/17a.txt" "已跳过该工作表"
+
+# 编号 / 区间 / 列表
+rm -f "$D/第一张表.sql" "$D/第二张表.sql"
+run 0 "编号选择第 2 个 sheet" "$TMP/17b.txt" "$D/08_multi_sheet.xlsx" 2
+{ [ -f "$D/第二张表.sql" ] && [ ! -f "$D/第一张表.sql" ]; } \
+  && ok "编号 2 只生成第二张表" || no "编号 2 只生成第二张表"
+run 0 "区间 [1-2]" "$TMP/17c.txt" "$D/08_multi_sheet.xlsx" "[1-2]"
+{ [ -f "$D/第一张表.sql" ] && [ -f "$D/第二张表.sql" ]; } \
+  && ok "区间 [1-2] 生成两个 sql" || no "区间 [1-2] 生成两个 sql"
+rm -f "$D/第二张表.sql"
+run 0 "列表 [1,3]" "$TMP/17d.txt" "$D/08_multi_sheet.xlsx" "[1,3]"
+{ [ -f "$D/第一张表.sql" ] && [ ! -f "$D/第二张表.sql" ]; } \
+  && ok "列表 [1,3] 只生成第一张表" || no "列表 [1,3] 只生成第一张表"
+
+# 缺省表名（文件 + sheet 两个参数）与缺省行号（1 / 2 / 到文件尾）
+rm -f "$D/第二张表.sql"
+run 0 "指定 sheet、缺省表名" "$TMP/17e.txt" "$D/08_multi_sheet.xlsx" 第二张表
+[ -f "$D/第二张表.sql" ] && ok "缺省表名 = sheet 名" || no "缺省表名 = sheet 名"
+run 0 "缺省行号等价旧写法" "$TMP/17f.txt" "$D/08_multi_sheet.xlsx" 第二张表 t_s2
+expect_grep "缺省行号结果一致" "$D/t_s2.sql" '`单价` decimal'
+
+# 冲突与错误
+run 3 "多 sheet + --out → 用法错误" "$TMP/17g.txt" "$D/08_multi_sheet.xlsx" --out "$TMP/x17.sql"
+run 3 "多 sheet + 表名 → 用法错误" "$TMP/17h.txt" "$D/08_multi_sheet.xlsx" t_x
+run 3 "编号越界 → 用法错误" "$TMP/17i.txt" "$D/08_multi_sheet.xlsx" 99
+expect_grep "越界提示包含表数量" "$TMP/17i.txt" "共 3 个工作表"
+
+# errrows 多 sheet：两个 sheet 各有失败行（--seed 5 保证脏行不被抽样判型）
+"$PY" - "$TMP/dirty_multi.xlsx" <<'PY17GEN'
+import sys
+from openpyxl import Workbook
+wb = Workbook(); wb.remove(wb.active)
+for name in ("脏甲", "脏乙"):
+    ws = wb.create_sheet(name)
+    ws.append(["姓名", "年龄"])
+    for i in range(1, 2401):
+        ws.append(["学生%d" % i, 7 + i % 10])
+    ws.append(["坏行", "暂无"])
+wb.save(sys.argv[1])
+PY17GEN
+rm -f "$TMP/errrows.xlsx" "$D/脏甲.sql" "$D/脏乙.sql"
+run 0 "多 sheet 失败行聚合" "$TMP/17j.txt" "$TMP/dirty_multi.xlsx" --seed 5
+[ -f "$TMP/errrows.xlsx" ] && ok "errrows.xlsx 已生成" || no "errrows.xlsx 已生成"
+"$PY" - "$TMP/errrows.xlsx" > "$TMP/17k.txt" <<'PY17CHK'
+import sys
+from openpyxl import load_workbook
+wb = load_workbook(sys.argv[1], read_only=True)
+names = wb.sheetnames
+assert names == ["脏甲", "脏乙"], names
+for n in names:
+    rows = list(wb[n].iter_rows(values_only=True))
+    assert rows[0][0] == "原行号", rows[0]
+    assert any(r[0] == 2402 for r in rows[1:]), (n, rows[1:])
+print("OK")
+PY17CHK
+if grep -q "^OK$" "$TMP/17k.txt"; then
+  ok "errrows 按源 sheet 分工作表（脏甲/脏乙）"
+else
+  no "errrows 按源 sheet 分工作表（脏甲/脏乙）"
+fi
+
+# 目录批量模式：当前目录所有 .xls/.xlsx，各转全部 sheet
+mkdir -p "$TMP/batch17"
+cp "$D/08_multi_sheet.xlsx" "$D/01_normal.xlsx" "$TMP/batch17/"
+(cd "$TMP/batch17" && "$BIN" --progress off --no-color > batch17.txt 2>&1)
+if [ -f "$TMP/batch17/第一张表.sql" ] && [ -f "$TMP/batch17/第二张表.sql" ] \
+   && [ -f "$TMP/batch17/学生信息.sql" ] \
+   && grep -q "结果表 3 · 批量汇总" "$TMP/batch17/batch17.txt"; then
+  ok "目录批量转换（2 个文件、汇总表）"
+else
+  no "目录批量转换（2 个文件、汇总表）"
+fi
+
+
 echo "================ 通过 $pass / 失败 $fail ================"
 [ "$fail" = "0" ]

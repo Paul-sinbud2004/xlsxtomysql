@@ -1,6 +1,6 @@
 [package]
 name = "xlsxtomysql"
-version = "2.2.0"
+version = "2.3.0"
 edition = "2021"
 description = "Convert Excel (.xlsx / .xls) spreadsheets into MySQL CREATE TABLE + INSERT statements — single-file, zero-dependency CLI"
 license = "MIT"

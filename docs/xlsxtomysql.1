@@ -1,11 +1,12 @@
 .\" 由 tools/gen_man.py 从 xlsxtomysql.rs 的 MAN_EN 常量生成，勿手改
-.TH XLSXTOMYSQL 1 "2026-09-29" "xlsxtomysql 2.2.0" "User Commands"
+.TH XLSXTOMYSQL 1 "2026-09-29" "xlsxtomysql 2.3.0" "User Commands"
 .SH NAME
 xlsxtomysql \- convert Excel (.xlsx / .xls) into MySQL CREATE TABLE + INSERT statements.
 .SH SYNOPSIS
 .nf
-    xlsxtomysql FILE.xlsx SHEET TABLE HEADER_ROW FIRST_DATA_ROW [ROW_COUNT] [options...]
+    xlsxtomysql [FILE.xlsx] [SHEET] [TABLE] [HEADER_ROW] [FIRST_DATA_ROW] [ROW_COUNT] [options...]
 
+    Every positional argument is optional (see below); omitting the file enters batch mode.
     \-h / \-\-help   short usage (option cheat sheet)
     \-\-man         this manual (option details, type rules, exit codes, limitations)
     \-V            version
@@ -14,13 +15,41 @@ xlsxtomysql \- convert Excel (.xlsx / .xls) into MySQL CREATE TABLE + INSERT sta
 .SH ARGUMENTS
 .nf
     FILE.xlsx      .xlsx (Excel 2007+) or .xls (Excel 2003). Reading .xls needs xlrd
-                   on the Python side.
-    SHEET          worksheet name; must match exactly (available names are listed on error).
+                   on the Python side. When omitted entirely: batch\-convert every
+                   .xls / .xlsx file in the current directory (Excel ~$ temp files
+                   are skipped).
+    SHEET          one of:
+                   1) a worksheet name, matched exactly (available names are listed on error);
+                   2) a 1\-based index, e.g. 2 = the second worksheet;
+                   3) a range/list expression such as [1\-3], [1,3,5], [1,3\-5]
+                      (brackets optional; commas/semicolons, ASCII or fullwidth, split items).
+                   Matching order: exact name first, then index/expression.
+                   When omitted, all worksheets are converted.
     TABLE          table name for CREATE TABLE, also the default output file <TABLE>.sql.
-    HEADER_ROW     1\-based. May sit inside a vertical merge (the top\-left value is read back).
-    FIRST_DATA_ROW 1\-based, must be greater than HEADER_ROW.
-    ROW_COUNT      optional; convert only this many data rows. Values beyond the sheet are
-                   truncated with a notice.
+                   When omitted the sheet name is used (sanitized and truncated, with a
+                   notice in the report; duplicate names get _2, _3 suffixes).
+                   Note: a table name cannot be all digits \-\- all\-digit tokens in the
+                   TABLE slot are parsed as HEADER_ROW.
+    HEADER_ROW     1\-based, default 1. May sit inside a vertical merge (the top\-left value
+                   is read back).
+    FIRST_DATA_ROW 1\-based, default HEADER_ROW + 1; must be greater than HEADER_ROW.
+    ROW_COUNT      optional, default: to the end of the sheet (0 also means "to the end").
+                   Values beyond the sheet are truncated with a notice.
+
+Multi\-sheet and batch mode
+    When one run covers several worksheets (no SHEET given, a range/list selected
+    several, or batch mode):
+      * each worksheet writes its own <table>.sql next to the source file; \-\-out is
+        not available then;
+      * no custom table name either (each sheet uses its own name);
+      * worksheets with an empty data area or empty header row are skipped with a
+        notice (an all\-empty selection is an error);
+      * failed rows from all sheets go into one errrows.xlsx, one worksheet per
+        source sheet;
+      * exit codes aggregate: any sheet blocked by a non\-standard format \-> 2; a file
+        that cannot be read at all (batch mode) \-> 1; otherwise 0.
+      * "result table 3 \- batch summary" lists success/failed rows and output file
+        per worksheet.
 
 .fi
 .SH OPTIONS

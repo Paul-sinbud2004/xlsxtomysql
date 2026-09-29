@@ -795,11 +795,18 @@ _XLSX_CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 _XLSX_ROOT_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"""
 
-_XLSX_WB_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"""
+_XLSX_ROOT_RELS = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"""
 
-_XLSX_WORKBOOK = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="%s" sheetId="1" r:id="rId1"/></sheets></workbook>"""
+# 多工作表时按 sheet 数量动态生成（%s 处填入各 sheet 的 Override / 关系 / 声明）
+_XLSX_CT_TMPL = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>%s</Types>"""
+
+_XLSX_RELS_TMPL = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">%s</Relationships>"""
+
+_XLSX_WB_TMPL = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>%s</sheets></workbook>"""
 
 # XML 1.0 不允许这些控制字符，Excel 也会拒绝加载
 _XML_BAD = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f]")
@@ -846,52 +853,76 @@ def _cell_xml(ref, v):
         ref, _xml_text(v))
 
 
-def write_xlsx(path, rows, sheet="Sheet1", dims=None):
-    """把 rows（可迭代，每项是一行的 list/tuple）写成一个极简 xlsx。
+def write_xlsx(path, sheets):
+    """把 sheets 写成一个极简 xlsx。
 
-    逐行流式写入，内存占用与行数无关；不建临时文件、不删除任何文件。
-    dims=(总行数, 总列数) 可选，给了就写出 <dimension>，方便其它工具直接取范围
-    （只读模式下 openpyxl 拿得到 max_row/max_column，不用扫全表）。
+    sheets: [(工作表名, rows, dims)]；rows 可迭代（每项一行的 list/tuple），
+    dims=(总行数, 总列数) 可为 None。逐行流式写入，内存占用与行数无关；
+    不建临时文件、不删除任何文件。dims 给了就写出 <dimension>，方便其它工具
+    直接取范围（只读模式下 openpyxl 拿得到 max_row/max_column，不用扫全表）。
+    工作表名的合法性与去重由宿主负责，这里只截断到 31 字符。
     """
-    name = _xml_attr((sheet or "Sheet1")[:_SHEET_MAX]) or "Sheet1"
-    dim = ""
-    if dims and dims[0] > 0 and dims[1] > 0:
-        dim = '<dimension ref="A1:%s%d"/>' % (col_name(dims[1]), dims[0])
+    n = len(sheets)
+    overrides = "".join(
+        '<Override PartName="/xl/worksheets/sheet%d.xml" ContentType='
+        '"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' % i
+        for i in range(1, n + 1))
+    rels = "".join(
+        '<Relationship Id="rId%d" Type="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships/worksheet" Target="worksheets/sheet%d.xml"/>' % (i, i)
+        for i in range(1, n + 1))
+    decls = "".join(
+        '<sheet name="%s" sheetId="%d" r:id="rId%d"/>'
+        % (_xml_attr((nm or ("Sheet%d" % i))[:_SHEET_MAX]) or ("Sheet%d" % i), i, i)
+        for i, (nm, _rows, _dims) in enumerate(sheets, 1))
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", _XLSX_CONTENT_TYPES)
+        z.writestr("[Content_Types].xml", _XLSX_CT_TMPL % overrides)
         z.writestr("_rels/.rels", _XLSX_ROOT_RELS)
-        z.writestr("xl/workbook.xml", _XLSX_WORKBOOK % name)
-        z.writestr("xl/_rels/workbook.xml.rels", _XLSX_WB_RELS)
-        with z.open("xl/worksheets/sheet1.xml", "w") as f:
-            f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                    b'<worksheet xmlns="http://schemas.openxmlformats.org/'
-                    b'spreadsheetml/2006/main">')
-            if dim:
-                f.write(dim.encode("utf-8"))
-            f.write(b"<sheetData>")
-            for ri, row in enumerate(rows, 1):
-                f.write(('<row r="%d">' % ri).encode("utf-8"))
-                for ci, v in enumerate(row, 1):
-                    xml = _cell_xml("%s%d" % (col_name(ci), ri), v)
-                    if xml:
-                        f.write(xml.encode("utf-8"))
-                f.write(b"</row>")
-            f.write(b"</sheetData></worksheet>")
+        z.writestr("xl/workbook.xml", _XLSX_WB_TMPL % decls)
+        z.writestr("xl/_rels/workbook.xml.rels", _XLSX_RELS_TMPL % rels)
+        for i, (_nm, rows, dims) in enumerate(sheets, 1):
+            dim = ""
+            if dims and dims[0] > 0 and dims[1] > 0:
+                dim = '<dimension ref="A1:%s%d"/>' % (col_name(dims[1]), dims[0])
+            with z.open("xl/worksheets/sheet%d.xml" % i, "w") as f:
+                f.write(b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                        b'<worksheet xmlns="http://schemas.openxmlformats.org/'
+                        b'spreadsheetml/2006/main">')
+                if dim:
+                    f.write(dim.encode("utf-8"))
+                f.write(b"<sheetData>")
+                for ri, row in enumerate(rows, 1):
+                    f.write(('<row r="%d">' % ri).encode("utf-8"))
+                    for ci, v in enumerate(row, 1):
+                        xml = _cell_xml("%s%d" % (col_name(ci), ri), v)
+                        if xml:
+                            f.write(xml.encode("utf-8"))
+                    f.write(b"</row>")
+                f.write(b"</sheetData></worksheet>")
 
 
 # --------------------------------------------------------------------------
-# mode = errrows   从 stdin 读失败行，写出 xlsx
+# mode = errrows   从 stdin 读失败行，写出 xlsx（支持多工作表）
 # --------------------------------------------------------------------------
 def cmd_errrows(out_path):
-    header = []
-    rows = []
+    # 行协议：S<TAB>工作表名 开始一个新工作表（缺省名为 errrows）；
+    #         H<TAB>... 表头；R<TAB>... 失败行（第一列「原行号」写成数值）
+    groups = []          # [name, header, rows]
+    cur = None
     for ln in sys.stdin.read().split("\n"):
         if not ln:
             continue
         parts = ln.split(TAB)
         tag = parts[0]
+        if tag == "S":
+            cur = [unesc(parts[1]) if len(parts) > 1 else "errrows", [], []]
+            groups.append(cur)
+            continue
+        if cur is None:
+            cur = ["errrows", [], []]
+            groups.append(cur)
         if tag == "H":
-            header = [unesc(x) for x in parts[1:]]
+            cur[1] = [unesc(x) for x in parts[1:]]
         elif tag == "R":
             vals = [unesc(x) for x in parts[1:]]
             # 第一列「原行号」写成数值，方便在 Excel 里排序/筛选
@@ -900,15 +931,15 @@ def cmd_errrows(out_path):
                     vals[0] = int(str(vals[0]).strip())
                 except (TypeError, ValueError):
                     pass
-            rows.append(vals)
+            cur[2].append(vals)
 
-    def gen():
-        yield header
-        for r in rows:
-            yield r
-
-    n_cols = max([len(header)] + [len(r) for r in rows]) if header or rows else 0
-    write_xlsx(out_path, gen(), "errrows", dims=(1 + len(rows), n_cols))
+    sheets = []
+    for name, header, rows in groups:
+        if not header and not rows:
+            continue
+        n_cols = max([len(header)] + [len(r) for r in rows]) if header or rows else 0
+        sheets.append((name, [header] + rows, (1 + len(rows), n_cols)))
+    write_xlsx(out_path, sheets)
     w("#OK\t%s" % os.path.abspath(out_path))
     return 0
 
