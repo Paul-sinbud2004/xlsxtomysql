@@ -395,11 +395,21 @@ shared string tables, number formats and the 1900/1904 date bases from scratch.
 
 ```bash
 bash build.sh                     # build, zero warnings
-bash tests/run_tests.sh           # functional self-test (exit codes, SQL content, report text, language, help)
-bash tests/compare_with_python.sh # byte-for-byte comparison against the Python implementation, 19 cases
-python3 tools/check_help_sync.py  # every option the code supports is documented in --help / --man
+bash tests/run_tests.sh           # functional self-test, 112 checks (exit codes, SQL, report text, language, help)
+python3 tools/apply_i18n.py --check    # every UI string has an English translation
+python3 tools/check_help_sync.py       # every option the code supports is documented in --help / --man
 python3 tools/gen_man.py xlsxtomysql.rs [--lang zh]   # regenerate docs/xlsxtomysql*.1 from the source constants
+python3 tests/check_en_clean.py ./xlsxtomysql   # run every sample in English mode, scan for stray CJK
 ```
+
+Tests are self-contained: `tests/make_samples.py` generates the sample workbooks into
+`tests/samples/` on first run (needs `openpyxl`; generating the `.xls` samples also needs
+`xlwt`), and the English-mode fixtures are generated the same way.
+
+`bash tests/compare_with_python.sh` and `tests/compare_probe.py` are **development-only**
+checks that diff this implementation byte-for-byte against an independent Python
+implementation of the same tool, which is not part of this repository. If it is not
+present they print a notice and exit 0 rather than failing.
 
 `build.sh` verifies on every build that the Python helper embedded in `xlsxtomysql.rs`
 matches `py_helper.py`, and prints the diff plus a `--sync` hint if they drifted.

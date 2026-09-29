@@ -343,12 +343,18 @@ xlsxtomysql.rs ─┬─ Rust 主体
 ```bash
 bash build.sh                     # 编译（零警告）
 bash tests/run_tests.sh           # 功能自测，112 项：退出码 / SQL 内容 / 报表文案 / 语言 / 帮助
-bash tests/compare_with_python.sh # 与 Python 实现逐字节对照：19 组常规用例
 python3 tools/apply_i18n.py --check     # 译文覆盖率：源码里的中文文案是否都有英文
 python3 tools/check_help_sync.py        # 代码支持的每个选项是否都写进了 --help / --man
 python3 tests/check_en_clean.py ./xlsxtomysql   # 实跑样例，确认英文模式无中文残留
 python3 tools/gen_man.py xlsxtomysql.rs [--lang zh]   # 从源码常量重新生成 man page
 ```
+
+测试是自包含的：首次运行 `run_tests.sh` 会由 `tests/make_samples.py` 把样本生成到
+`tests/samples/`（需要 `openpyxl`，生成 `.xls` 样本还需要 `xlwt`），英文样例同理。
+
+`tests/compare_with_python.sh` 与 `tests/compare_probe.py` 是**开发期**用的对照检查：
+它们把本实现与另一份独立的 Python 实现逐字节比对，而那份实现不在本仓库里。
+找不到时脚本会明确提示「跳过」并以 0 退出，不会报错。
 
 `tests/check_errrows.py` 单独校验导出的 `errrows.xlsx` 表头与内容。
 
