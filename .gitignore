@@ -1,0 +1,38 @@
+# ---- 构建产物 ----
+/target/
+/xlsxtomysql
+/xlsxtomysql.exe
+*.part
+
+# cargo 构建缓存（Cargo.lock 对二进制项目应提交，故不忽略）
+/target/debug/
+/target/release/
+
+# ---- 发布产物 ----
+/dist/
+
+# ---- 测试临时输出与生成的样本（脚本会自动重建）----
+/tests/tmp/
+/tests/cmp/
+/tests/cmpprobe/
+/tests/enfix/
+/tests/enfix_out/
+/tests/samples/
+/tests/probe/
+/tests/probe_out/
+
+# ---- 开发期备份 ----
+/backup/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- 编辑器 / 系统 ----
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/

@@ -1,0 +1,26 @@
+[package]
+name = "xlsxtomysql"
+version = "2.2.0"
+edition = "2021"
+description = "Convert Excel (.xlsx / .xls) spreadsheets into MySQL CREATE TABLE + INSERT statements — single-file, zero-dependency CLI"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Paul-sinbud2004/xlsxtomysql"
+homepage = "https://github.com/Paul-sinbud2004/xlsxtomysql"
+documentation = "https://github.com/Paul-sinbud2004/xlsxtomysql#readme"
+keywords = ["excel", "mysql", "xlsx", "sql", "cli"]
+categories = ["command-line-utilities", "database"]
+# 单文件实现，源码就是 xlsxtomysql.rs 本体；PY_HELPER 常量里内嵌了 Python 助手。
+# 不需要任何依赖，cargo 只是给习惯 cargo 的人多一个入口。
+[dependencies]
+
+[[bin]]
+name = "xlsxtomysql"
+path = "xlsxtomysql.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"
+# 不用 panic = "abort"：原子输出的临时文件清理依赖 Drop，abort 会跳过析构。

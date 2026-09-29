@@ -1,0 +1,56 @@
+# 更新记录 / Changelog
+
+版本号规则：`主版本.次版本.修订号`（语义化版本）。
+开发期曾用 `-rs` 后缀区分同名的 Python 实现，自首个公开发布版起统一去掉后缀。
+
+所有值得注意的改动都会记在这里。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
+
+## 2.2.0 —— 首个公开发布版
+
+### 新增
+
+- **中英双语界面**。默认跟随系统语言：中文环境输出中文，其它环境输出英文。
+  判定顺序 `--lang` > `XLSXTOMYSQL_LANG` > `LC_ALL` > `LC_MESSAGES` > `LANG`；
+  一个都没有时，Unix 按英文、Windows 读系统界面语言。
+  生成的 `.sql` 注释、`--report` 报表、`errrows.xlsx` 表头都跟着同一个语言走。
+- **`--man` 详细手册**（中英各一份），涵盖选项细节、类型推断规则、抽样算法、
+  特殊表格处理、退出码与已知限制。`--help` 增加语言与 `--man` 说明。
+- **`--version` 带上目标平台**，例如 `xlsxtomysql 2.2.0 (linux-x86_64)`。
+- **安装与发布配套**：`install.sh`（Unix）、`install.ps1`（Windows）、
+  `release.sh`（打包 + SHA256SUMS）、`LICENSE`、`CHANGELOG.md`、
+  `Cargo.toml`（便于 `cargo build`）、`docs/xlsxtomysql.1`（man page）。
+- **校验工具**：`tools/check_help_sync.py`（选项 ↔ 文档同步）、
+  `tools/i18n_inventory.py` + `tools/apply_i18n.py`（文案清单与译文表覆盖率）、
+  `tests/check_en_clean.py`（英文模式无中文残留）。
+
+### 改进（跨平台）
+
+- **Windows**：内嵌 Python 助手源码约 35 KB，超过 `CreateProcess` 约 32 K 的命令行上限，
+  用 `python -c <源码>` 会直接启动失败。现在 Windows 上自动改为写入临时脚本再执行；
+  Unix 继续用 `-c`，磁盘上不落地 `.py`。可用 `XLSXTOMYSQL_PYFILE=1` 在本机演练该路径。
+- **Windows**：控制台自动切到 UTF-8 代码页并打开 ANSI 转义，彩色与中文不再乱码；
+  解释器查找按 `PATHEXT` 补全 `.exe`，并支持 `py` 启动器与 `%LOCALAPPDATA%` 下的 venv。
+- **Unix**：恢复默认 `SIGPIPE` 行为，`xlsxtomysql --man | head` 之类不会再抛 panic 与回溯。
+- **时区**：生成的 SQL 头部时间改用本地时区偏移（原实现写死 +8，非东八区用户时间不对）。
+- **路径**：家目录、输出路径统一用平台原生分隔符；命令行参数按有损 UTF-8 解析，
+  文件名含生僻字节时不再 panic。
+- **输出原子化**：`.sql` 先写 `<目标>.part`，成功后才改名到目标。中途失败不会留下
+  半截 sql 冒充成功结果，也不会覆盖上一次的成果。输出目录不存在时给出明确提示。
+
+### 修复
+
+- `--help` / `--man` 补齐缺失选项（`--sample-min`、`--sample-max`、`--hints`、
+  `--print-errors`）；修正帮助文本里 `XLSXTOMYSQL_LANG` 的拼写错误。
+- 英文模式下表格省略号改用 `...`；英文句子较长，报表单元格截断宽度相应放宽。
+- 字段名提示、空行判定等拼接文案改为整句模板，避免中英混排出现病句。
+
+## 2.1.0
+
+- 抽出 `py_helper.py` 作为可独立单测的助手源码，`build.sh --sync` 回写进 `PY_HELPER` 常量。
+- 双线程分别接管助手 stdout/stderr，进度条与事件流互不干扰。
+
+## 2.0.0
+
+- 首个 Rust 单文件版本：零 crate、`rustc` 一条命令编译，行为与 Python 版对齐。
+- 行协议事件流（`#SHEET` / `#MERGES` / `#ROW` / `#FATAL` …），退出码 0/1/2/3。
+- 类型推断、抽样跳跃扫描、合并单元格补齐、非标准格式阻断、失败行导出 `errrows.xlsx`。

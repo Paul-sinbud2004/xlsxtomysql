@@ -1,0 +1,183 @@
+.\" 由 tools/gen_man.py 从 xlsxtomysql.rs 的 MAN_EN 常量生成，勿手改
+.TH XLSXTOMYSQL 1 "2026-09-29" "xlsxtomysql 2.2.0" "User Commands"
+.SH NAME
+xlsxtomysql \- convert Excel (.xlsx / .xls) into MySQL CREATE TABLE + INSERT statements.
+.SH SYNOPSIS
+.nf
+    xlsxtomysql FILE.xlsx SHEET TABLE HEADER_ROW FIRST_DATA_ROW [ROW_COUNT] [options...]
+
+    \-h / \-\-help   short usage (option cheat sheet)
+    \-\-man         this manual (option details, type rules, exit codes, limitations)
+    \-V            version
+
+.fi
+.SH ARGUMENTS
+.nf
+    FILE.xlsx      .xlsx (Excel 2007+) or .xls (Excel 2003). Reading .xls needs xlrd
+                   on the Python side.
+    SHEET          worksheet name; must match exactly (available names are listed on error).
+    TABLE          table name for CREATE TABLE, also the default output file <TABLE>.sql.
+    HEADER_ROW     1\-based. May sit inside a vertical merge (the top\-left value is read back).
+    FIRST_DATA_ROW 1\-based, must be greater than HEADER_ROW.
+    ROW_COUNT      optional; convert only this many data rows. Values beyond the sheet are
+                   truncated with a notice.
+
+.fi
+.SH OPTIONS
+.nf
+    Output and behaviour
+      \-\-out PATH             output .sql path (default: next to the source, <TABLE>.sql)
+      \-\-err\-file PATH        failed\-rows workbook (default: next to the source, errrows.xlsx)
+      \-\-report PATH          also save the console report as plain text
+      \-\-scan\-only            pre\-scan and print result table 2 only, no SQL
+      \-\-force                do not stop on non\-standard sheet formats
+    INSERT statements
+      \-\-batch\-size N         rows per INSERT, default 200
+      \-\-insert\-ignore        emit INSERT IGNORE
+      \-\-empty\-as\-null M      auto | always | never, whether empty cells become NULL, default auto
+      \-\-not\-null             add NOT NULL to every column
+      \-\-drop\-table           emit DROP TABLE IF EXISTS
+      \-\-add\-id NAME          append a bigint auto\-increment primary key column
+      \-\-primary\-key COL      use COL as the primary key (name from the header row)
+      \-\-table\-comment S      table comment (COMMENT='...')
+    Type inference
+      \-\-varchar\-max N        varchar ceiling, default 1000
+      \-\-text\-max N           text ceiling above which longtext is used, default 16000
+      \-\-max\-ident N          max column\-name length, default 64 (longer names are truncated)
+      \-\-no\-hints             disable column\-name hints (phone / ID / money / ...)
+      \-\-hints                enable them again (on by default; useful to override an earlier \-\-no\-hints)
+    Scanning and sampling
+      \-\-full\-scan            scan every row (most accurate, slow on big files)
+      \-\-sample\-threshold N   row count above which sampled skip scanning starts, default 2000
+      \-\-sample\-ratio F       sampling ratio, default 0.10
+      \-\-sample\-min N         minimum sampled rows, default 1000
+      \-\-sample\-max N         maximum sampled rows, default 20000
+      \-\-seed N               seed for the sampling start (reproducible scans)
+    Merged cells
+      \-\-merge\-scan M         auto | on | off, default auto
+      \-\-merge\-scan\-limit N   size limit in MB for merge scanning, default 64
+      \-\-no\-fill\-down         do not fill merged cells in the data area
+    Misc
+      \-\-print\-errors N       max failed rows shown on the console, default 20
+      \-\-progress off         disable the progress bar (\-\-no\-progress is equivalent)
+      \-\-no\-color             disable colored output (auto\-off when piping)
+      \-\-python PATH          Python interpreter used to read Excel
+      \-\-dump\-python          print the embedded Python helper source and exit
+      \-\-man                  this manual
+      \-\-lang zh|en           force the output language
+      \-h, \-\-help / \-V, \-\-version
+
+.fi
+.SH EXIT STATUS
+.nf
+    0   success (failed rows do not change this, as long as SQL was generated; they are listed)
+    1   runtime error (reading/writing files, Python helper failure, ...)
+    2   blocked: non\-standard sheet format; fix the source or pass \-\-force
+    3   bad arguments or bad references (missing file, wrong sheet name, row out of range)
+
+.fi
+.SH TYPE INFERENCE
+.nf
+    The whole column sample is classified first, then mapped to a MySQL type:
+      integers only     \-> tinyint / smallint / mediumint / int / bigint (smallest that fits)
+      with decimals     \-> decimal(p,s); beyond MySQL limits (65/30) \-> double
+      scientific        \-> double
+      boolean           \-> tinyint(1)
+      dates only        \-> date      times only \-> time      datetimes only \-> datetime
+      dates + datetimes \-> datetime (unified)
+      dates mixed with times \-> varchar (kept as text to avoid distortion)
+      text              \-> varchar(n) rounded up to a tidy ladder step
+      long text         \-> text; over 65535 bytes or over \-\-text\-max \-> longtext
+      empty column      \-> varchar(255), explained in the "inference basis" column
+    Column\-name hints (disable with \-\-no\-hints):
+      phone / ID / account / student\-no / e\-mail / postcode \-> stored as text even if numeric
+      amount / price / fee / salary \-> prefers decimal(p,2)
+    Note: text vs longtext is judged in UTF\-8 bytes (a CJK character is 3 bytes).
+
+.fi
+.SH SAMPLING
+.nf
+    Above \-\-sample\-threshold (default 2000) rows the tool always judges a warm\-up block first,
+    then skips through the rest with a prime step until roughly \-\-sample\-ratio (default 10%)
+    of the rows are judged. A prime step avoids resonance with periodic data, which would
+    otherwise systematically miss values and misjudge types. The sampled count is bounded by
+    \-\-sample\-min / \-\-sample\-max. Values the sample missed fail during conversion and are
+    reported per row; rerun with \-\-full\-scan or a larger \-\-sample\-ratio. Use \-\-seed N to
+    reproduce a specific sampling.
+
+.fi
+.SH SPECIAL SHEET LAYOUTS
+.nf
+    Detected, reported with position + problem + explanation, and blocking unless \-\-force:
+      * a fully blank row in the middle of the data (breaks the dataset)
+      * divider/decoration rows (\-\-\-\-, ====)
+      * a duplicated header row
+      * data beyond the header range (headers end at C but data reaches E)
+      * empty data area / empty header row
+    Reported but not blocking: suspected note rows ("Unit: CNY"), total/subtotal rows,
+    trailing blank rows.
+    Handled automatically with a notice:
+      * merged cells in the data area are filled from the top\-left value (\-\-no\-fill\-down off)
+      * a header row inside a vertical merge takes the top\-left value of the merge
+      * hidden rows/columns are still exported (noticed, data untouched)
+      * in\-cell images (WPS DISPIMG / Excel cell pictures) cannot be written to SQL; the cell
+        becomes empty
+      * percentage formatting: Excel shows 12.5% but stores 0.125, which is what gets inserted
+      * datetimes with a timezone offset (...+08:00): MySQL stores no timezone, the offset is
+        dropped and the literal time kept
+      * numbers with more than 15 digits: Excel only keeps 15 exactly; the tail may be zeroed
+      * values outside the MySQL date/time range: the whole column is stored as text
+    Never guessed (kept as text, handle them yourself): ambiguous dates like 12/31/2024,
+    currency strings like €1,234.56, textual 12.5%, full\-width digits, zero\-padded codes.
+
+.fi
+.SH REPORTS
+.nf
+    Two tables are printed:
+      Result table 1: rows, ok/failed/warned/skipped, scan mode, elapsed, output file,
+                      failed\-rows file; plus failure details and failure reason groups.
+      Result table 2: each new column name, MySQL type, inference basis, header handling.
+    Failed rows (source row number, original values, reason) go to errrows.xlsx so they can be
+    fixed one by one. \-\-report PATH also saves the console report as text.
+
+.fi
+.SH ENVIRONMENT
+.nf
+    XLSXTOMYSQL_PYTHON   Python interpreter used to read Excel (same as \-\-python)
+    XLSXTOMYSQL_LANG     output language: zh / en (wins over the system locale)
+    LC_ALL / LC_MESSAGES / LANG   automatic detection (zh* \-> Chinese, otherwise English)
+
+.fi
+.SH EXAMPLES
+.nf
+    # standard sheet: header on row 1, data from row 2
+    xlsxtomysql students.xlsx Sheet1 students 1 2
+
+    # only the first 100 rows, with DROP TABLE and a surrogate key
+    xlsxtomysql roster.xlsx Sheet1 t_list 2 3 100 \-\-drop\-table \-\-add\-id id
+
+    # inspect the inferred types of a large file first
+    xlsxtomysql orders.xlsx detail t_order 1 2 \-\-scan\-only
+
+    # extra columns in the source, but conversion must go on
+    xlsxtomysql report.xlsx Sheet1 t_rpt 1 2 \-\-force
+
+.fi
+.SH LIMITATIONS
+.nf
+    * Pictures, comments, hyperlinks and charts are not cell values and are not exported.
+      Floating pictures covering data rows cannot be detected (floating objects have no cell
+      anchor) \- check such sheets by hand.
+    * Only cached formula results are read; open and re\-save the file in Excel when a formula
+      column comes out empty.
+    * Sampling can miss extreme values; those rows then fail individually and are reported.
+      Keep a copy of the source file and import the generated SQL into a test database first.
+    * .xls needs xlrd on the Python side; .xlsx needs openpyxl.
+    * Encrypted or corrupt workbooks cannot be read; decrypt or repair them first.
+
+.fi
+.SH LICENSE
+.nf
+    MIT License.
+
+.fi

@@ -1,0 +1,176 @@
+.\" 由 tools/gen_man.py 从 xlsxtomysql.rs 的 MAN_ZH 常量生成，勿手改
+.TH XLSXTOMYSQL 1 "2026-09-29" "xlsxtomysql 2.2.0" "User Commands"
+.SH NAME
+xlsxtomysql —— 把 Excel（.xlsx / .xls）转换成 MySQL 建表语句与插入语句。
+.SH SYNOPSIS
+.nf
+    xlsxtomysql 文件名.xlsx sheet名 新表名 字段名称所在行 第一个数据所在行 [共几行] [选项...]
+
+    \-h / \-\-help   精简用法（选项速查）
+    \-\-man         本手册（参数细节、类型推断规则、退出码、已知限制）
+    \-V           版本号
+
+.fi
+.SH ARGUMENTS
+.nf
+    文件名.xlsx       .xlsx（Excel 2007+）或 .xls（Excel 2003）。
+                      读 .xls 需要 Python 侧装有 xlrd。
+    sheet名           工作表名，必须完全一致（错误提示里会列出可选工作表）。
+    新表名            既是 CREATE TABLE 的表名，也是默认输出文件名 <新表名>.sql。
+    字段名称所在行     1 起算。允许落在纵向合并区内（程序回读合并区左上角的值）。
+    第一个数据所在行   1 起算，必须大于字段名称所在行。
+    共几行            可选。只转换这么多行数据；超出工作表范围会自动截断并提示。
+
+.fi
+.SH OPTIONS
+.nf
+    输出与行为
+      \-\-out PATH            输出 sql 的路径（默认：源文件同目录/<新表名>.sql）
+      \-\-err\-file PATH       失败行文件（默认：源文件同目录/errrows.xlsx）
+      \-\-report PATH         把控制台报表另存一份纯文本（便于存档/发邮件）
+      \-\-scan\-only           只预扫描并输出「结果表 2」，不生成 sql
+      \-\-force               发现非标准格式时不再阻断，强行转换
+    INSERT 语句
+      \-\-batch\-size N        每条 INSERT 的行数，默认 200
+      \-\-insert\-ignore       生成 INSERT IGNORE
+      \-\-empty\-as\-null M     auto | always | never，空单元格是否写 NULL，默认 auto
+      \-\-not\-null            所有字段加 NOT NULL
+      \-\-drop\-table          生成 DROP TABLE IF EXISTS
+      \-\-add\-id NAME         追加一个 bigint 自增主键列（并作为主键）
+      \-\-primary\-key COL     指定主键列（列名取自字段名行）
+      \-\-table\-comment S     表注释（写入 COMMENT='...'）
+    类型推断
+      \-\-varchar\-max N       varchar 上限，默认 1000；超过则考虑 text/longtext
+      \-\-text\-max N          text 上限，默认 16000；超过改用 longtext
+      \-\-max\-ident N         字段名最大长度，默认 64（超长会截断并说明）
+      \-\-no\-hints            关闭字段名语义推断（手机号/证件号/金额等按名字给类型）
+      \-\-hints               重新打开（默认就是开的，主要用来覆盖前面的 \-\-no\-hints）
+    扫描与抽样
+      \-\-full\-scan           强制全量扫描（最准，大文件慢）
+      \-\-sample\-threshold N  超过多少行启用抽样跳跃扫描，默认 2000
+      \-\-sample\-ratio F      抽样比例，默认 0.10（10%）
+      \-\-sample\-min N        抽样行数下限，默认 1000
+      \-\-sample\-max N        抽样行数上限，默认 20000
+      \-\-seed N              抽样起点随机种子，便于复现同一次扫描
+    合并单元格
+      \-\-merge\-scan M        auto | on | off，是否扫描合并区域，默认 auto
+      \-\-merge\-scan\-limit N  合并扫描的大小上限（MB），默认 64
+      \-\-no\-fill\-down        不自动补齐数据区合并单元格
+    其它
+      \-\-print\-errors N      控制台最多显示多少条失败行，默认 20
+      \-\-progress off        关闭进度条；\-\-no\-progress 等价
+      \-\-no\-color            关闭彩色输出（管道输出会自动关闭）
+      \-\-python PATH         指定读取 Excel 的 Python 解释器
+      \-\-dump\-python         打印内嵌的 Python 助手源码后退出
+      \-\-man                 本手册
+      \-\-lang zh|en          强制输出语言
+      \-h, \-\-help / \-V, \-\-version
+
+.fi
+.SH EXIT STATUS
+.nf
+    0   成功（即使有失败行，只要生成了 sql 就算成功，失败行会列在报表里）
+    1   运行错误（读文件、写文件、Python 助手异常等）
+    2   非标准格式阻断：源文件需要先处理，或加 \-\-force 强行继续
+    3   参数错误或引用错误（文件不存在、工作表名不对、行号越界等）
+
+.fi
+.SH TYPE INFERENCE
+.nf
+    先按整列样本判定种类，再给 MySQL 类型：
+      全整数        → tinyint / smallint / mediumint / int / bigint（按数值范围挑最小够用的）
+      含小数        → decimal(p,s)，精度超出 MySQL 上限（65/30）时改用 double
+      科学计数法     → double
+      真假值        → tinyint(1)
+      纯日期        → date      纯时间 → time      纯日期时间 → datetime
+      日期+日期时间  → datetime（统一）
+      日期与时间混杂 → varchar（按文本保存，避免失真）
+      固定文本      → varchar(n)，n 按样本最长值向上取「整齐档位」
+      长文本        → text；超过 65535 字节或超过 \-\-text\-max 则 longtext
+      全空          → varchar(255)，并在「推断依据」里说明
+    字段名提示（\-\-no\-hints 可关）：
+      名字含手机/电话/证件/账号/学号/邮箱/邮编等 → 即使整列是数字也按文本存
+      名字含金额/价格/费用/工资等 → 倾向 decimal(p,2)
+    注意：text / longtext 的判断按 UTF\-8 字节数（中文一个字 3 字节）。
+
+.fi
+.SH SAMPLING
+.nf
+    行数超过 \-\-sample\-threshold（默认 2000）时，先无条件判断开头一段，然后按「质数步长」
+    跳跃抽样到大约 \-\-sample\-ratio（默认 10%）的行。用质数步长是为了避免与数据自身周期
+    共振（否则固定周期数据会系统性漏掉一部分取值，把类型判错）。抽样行数在
+    \-\-sample\-min / \-\-sample\-max 之间兜底。扫描阶段识别出的小数位/长度不够用时，
+    转换阶段会逐行报错并计入失败行；可加 \-\-full\-scan 或调大 \-\-sample\-ratio 重跑。
+    想复现同一次抽样，用 \-\-seed N。
+
+.fi
+.SH SPECIAL SHEET LAYOUTS
+.nf
+    程序会检查并给出「位置 + 问题 + 说明」，需要处理完再重跑（除非加 \-\-force）：
+      * 数据区中间整行为空（会打断数据）→ 阻断
+      * 分隔线/装饰行（如 \-\-\-\-、====）→ 阻断
+      * 重复的字段名行（表头出现两次）→ 阻断
+      * 数据超出字段名范围（字段名行只到 A\-C，数据却到 E）→ 阻断
+      * 数据区为空 / 字段名行没有内容 → 阻断
+      * 疑似说明行（「单位：元」之类）、疑似合计/小计行、末尾空行 → 只提醒
+    会自动处理并提示：
+      * 数据区合并单元格：按左上角内容补齐整块（\-\-no\-fill\-down 关闭）
+      * 字段名行位于纵向合并区：取合并区左上角那一行的值
+      * 隐藏行列：内容仍会被导出（只提示，不改数据）
+      * 单元格内图片（WPS DISPIMG / Excel 单元格图片）：无法写入 SQL，对应单元格变空
+      * 百分比格式：Excel 显示 12.5%，实际存的是 0.125，入库也是 0.125
+      * 带时区偏移的日期时间（…+08:00）：MySQL 不存时区，偏移被丢弃，只保留字面时间
+      * 15 位以上的数字：Excel 只精确保存 15 位，末位可能已被改写为 0
+      * 超出 MySQL 日期/时间范围的值：整列按文本保存
+    不会猜测的写法（一律按文本保存，需自行处理）：12/31/2024 这类有歧义的日期、
+    €1,234.56 这类货币表达、文本形式的 12.5%、全角数字、带前导零的编号。
+
+.fi
+.SH REPORTS
+.nf
+    控制台输出两张表：
+      结果表 1：行数、成功/失败/警告/跳过、扫描方式、耗时、输出文件、失败行文件；
+                有失败行时附「失败明细」与「失败原因归类」。
+      结果表 2：每个新字段名、MySQL 类型、推断依据、字段名处理（改名/截断/非空说明）。
+    失败行（含原行号、原值、原因）导出到 errrows.xlsx，便于逐行修正。
+    \-\-report PATH 可把控制台报表另存一份文本。
+
+.fi
+.SH ENVIRONMENT
+.nf
+    XLSXTOMYSQL_PYTHON   读取 Excel 用的 Python 解释器（等价 \-\-python）
+    XLSXTOMYSQL_LANG     输出语言：zh / en（优先级高于系统 locale）
+    LC_ALL / LC_MESSAGES / LANG   语言自动检测（zh 开头 → 中文，其它 → 英文）
+
+.fi
+.SH EXAMPLES
+.nf
+    # 标准表：第 1 行字段名，第 2 行起是数据
+    xlsxtomysql 学生信息.xlsx 学生信息 students 1 2
+
+    # 只要前 100 行，带上 drop table 与主键
+    xlsxtomysql 名单.xlsx Sheet1 t_list 2 3 100 \-\-drop\-table \-\-add\-id id
+
+    # 大文件先看类型推断结果
+    xlsxtomysql 订单.xlsx 明细 t_order 1 2 \-\-scan\-only
+
+    # 源文件有多余列、又必须转：强行继续
+    xlsxtomysql 报表.xlsx Sheet1 t_rpt 1 2 \-\-force
+
+.fi
+.SH LIMITATIONS
+.nf
+    * 图片、批注、超链接、图表不是单元格值，不参与导出；浮动图片若遮挡数据行，
+      程序无法识别（浮动对象没有行列归属），这类表请人工核对。
+    * 只读取公式的当前缓存结果；整列为空时请先用 Excel 打开保存一次。
+    * 抽样扫描可能漏掉少量极端值，转换阶段会如实报错并计入失败行。转换前请保留
+      源文件副本，生成的 sql 建议先导入测试库确认。
+    * .xls 依赖 Python 的 xlrd；.xlsx 依赖 openpyxl。缺依赖时按提示安装。
+    * 加密/损坏的工作簿无法读取，需要先解密或修复。
+
+.fi
+.SH LICENSE
+.nf
+    MIT License。
+
+.fi

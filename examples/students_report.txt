@@ -1,0 +1,44 @@
+xlsxtomysql 2.2.0 - Excel to MySQL
+
+format: Excel 2007+ (.xlsx)
+sheet  : 学生信息  (6 rows x 8 cols)
+
+[1/2] Pre-scan - detect column types and check the table layout
+scan mode: full scan of 5 rows
+
+[2/2] Convert - writing SQL
+
+Report 1 · Conversion result
+┌────────────────────┬───────────────────────┐
+│ Item               │ Value                 │
+├────────────────────┼───────────────────────┤
+│ Source file        │ students.xlsx         │
+│ Format             │ Excel 2007+ (.xlsx)   │
+│ Sheet              │ 学生信息              │
+│ Header row         │ 1                     │
+│ First data row     │ 2                     │
+│ Data rows          │ 5                     │
+│ Succeeded          │ 5                     │
+│ Failed             │ 0                     │
+│ Warnings           │ 0                     │
+│ Blank rows skipped │ 0                     │
+│ Scan mode          │ full scan of 5 rows   │
+│ Elapsed            │ 654 ms                │
+│ Output file        │ examples/students.sql │
+└────────────────────┴───────────────────────┘
+
+Report 2 · New column names and types
+┌────────────┬──────────────┬──────────────────────────────────────────────────────────────────────────────┬───────────────────┐
+│ New column │ MySQL type   │ Basis                                                                        │ Column-name notes │
+├────────────┼──────────────┼──────────────────────────────────────────────────────────────────────────────┼───────────────────┤
+│ 姓名       │ varchar(16)  │ text content, longest sample 3 chars                                         │ -                 │
+│ 班级       │ varchar(16)  │ text content, longest sample 4 chars                                         │ -                 │
+│ 出生日期   │ date         │ dates only                                                                   │ -                 │
+│ 身高cm     │ decimal(4,1) │ decimal values, up to 3 integer digits and 1 fraction digits                 │ -                 │
+│ 手机号     │ varchar(32)  │ the name looks like an identifier (phone / ID / account): stored as text,... │ -                 │
+│ 午餐费     │ decimal(4,1) │ decimal values, up to 2 integer digits and 1 fraction digits                 │ -                 │
+│ 出勤率     │ decimal(4,3) │ decimal values, up to 1 integer digits and 3 fraction digits                 │ -                 │
+│ 备注       │ varchar(16)  │ text content, longest sample 5 chars                                         │ -                 │
+└────────────┴──────────────┴──────────────────────────────────────────────────────────────────────────────┴───────────────────┘
+
+done: examples/students.sql
